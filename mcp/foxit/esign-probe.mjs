@@ -135,7 +135,7 @@ if (!createDraft) {
     "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
     "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
 
-  // Schema confirmed live Aug 19 (Gate 0): the gateway wants inputType +
+  // Schema confirmed live Aug 18 (Gate 0): the gateway wants inputType +
   // base64FileString[] + fileNames[] + parties[], NOT a documents/recipients
   // shape. Response nests the id at folder.folderId. sendNow:false alone
   // (no createEmbeddedSigningSession) yields folderStatus DRAFT.

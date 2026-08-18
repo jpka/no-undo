@@ -1,6 +1,7 @@
-# Gate 0 — Aug 19: eSign & Nutrient live-API verification
+# Gate 0 — Aug 18: eSign & Nutrient live-API verification
 
 Build-plan stage: "Aug 19 — ~2h, from the recovered slack. GATE 0: prove eSign exists for us."
+Executed **Aug 18** — the recovered slack pulled the stage in a day early, like the first batch.
 Ran live against both vendor APIs from a networked machine (this time the agent sandbox *could*
 reach `na1.fusion.foxit.com` and `api.nutrient.io` — the allowlist-only constraint in
 `docs/review-aug18.md` §3 did not apply here, so the probes were executed directly rather than
@@ -10,7 +11,7 @@ handed to a human).
 
 ## 1. Foxit eSign — 5/5 PASS. The project-killing assumption is cleared.
 
-Script: `node mcp/foxit/esign-probe.mjs --create-draft` → `docs/fixtures/esign-probe-aug19.txt`.
+Script: `node mcp/foxit/esign-probe.mjs --create-draft` → `docs/fixtures/esign-probe-aug18.txt`.
 
 | # | Check | Result | Live evidence |
 | --- | --- | --- | --- |

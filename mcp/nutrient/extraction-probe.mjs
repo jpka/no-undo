@@ -2,11 +2,11 @@
  * Nutrient DWS Data Extraction probe — Gate 0.
  *
  * Asks the one question the Nutrient track rests on: does a live extraction
- * call return per-span confidence scores we can threshold? Gate 0 (Aug 19)
+ * call return per-span confidence scores we can threshold? Gate 0 (Aug 18)
  * found the account is NOT entitled to Data Extraction yet — see the verdict
- * section in this header and docs/gate0-aug19.md.
+ * section in this header and docs/gate0-aug18.md.
  *
- * Gate 0 diagnostic (Aug 19, live):
+ * Gate 0 diagnostic (Aug 18, live):
  *   POST /extraction/parse, NUTRIENT_API_KEY (DWS Processor key, pdf_live_*)
  *     -> HTTP 403 {"error":{"details":"Forbidden",...}}
  *   same route, no Authorization                    -> HTTP 401 (route exists)
@@ -25,6 +25,13 @@
  *   set -a; . ./.env; set +a
  *   node mcp/nutrient/extraction-probe.mjs              # messy page, generated
  *   node mcp/nutrient/extraction-probe.mjs --file x.pdf # explicit document
+ *   node mcp/nutrient/extraction-probe.mjs --fixture    # also save the response
+ *                                                       # under docs/fixtures/ for
+ *                                                       # test replay (opt-in only)
+ *
+ * Output: the raw response is written to the OS temp dir by default so no
+ * document-derived data lands in the tracked repo. Pass --fixture to opt into
+ * writing it under docs/fixtures/ (an explicit decision to commit that data).
  *
  * Never sends anything irreversible: extraction is read-only.
  */
@@ -32,6 +39,7 @@
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const EXTRACT = "https://api.nutrient.io/extraction/parse";
 const THRESHOLD = 0.7; // spans below this would route to the human gate
@@ -153,14 +161,20 @@ try {
 const ms = Date.now() - started;
 const raw = await res.text();
 
-const fixtureDir = new URL("../../docs/fixtures/", import.meta.url);
-mkdirSync(fixtureDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-const fixturePath = new URL(`nutrient-extraction-${stamp}.json`, fixtureDir);
-writeFileSync(fixturePath, raw);
+const wantFixture = process.argv.includes("--fixture");
+const fixturesDir = fileURLToPath(new URL("../../docs/fixtures/", import.meta.url));
+if (wantFixture) mkdirSync(fixturesDir, { recursive: true });
+const outPath = wantFixture
+  ? join(fixturesDir, `nutrient-extraction-${stamp}.json`)
+  : join(tmpdir(), `no-undo-extraction-${stamp}.json`);
+writeFileSync(outPath, raw);
 
 console.log(`[HTTP ${res.status} in ${ms}ms] ${EXTRACT}`);
-console.log(`fixture: ${fixturePath.pathname.replace(process.cwd(), ".")}`);
+console.log(`response saved: ${outPath}`);
+if (!wantFixture) {
+  console.log("  (temp, not tracked — re-run with --fixture to save under docs/fixtures/ for test replay)");
+}
 
 if (res.status === 200) {
   let data;
@@ -198,7 +212,7 @@ if (res.status === 200) {
 
 if (res.status === 403) {
   console.error("\n[FAIL] HTTP 403 Forbidden on /extraction/parse.");
-  console.error("  This is the Gate 0 entitlement finding (Aug 19): the key in use is not");
+  console.error("  This is the Gate 0 entitlement finding (Aug 18): the key in use is not");
   console.error("  a Data Extraction key. Data Extraction is a separately provisioned product/tenant.");
   console.error("  No-auth on the same route -> 401 (route exists); nonsense path -> 404.");
   console.error("  UNBLOCK: add a Data Extraction API key from dashboard.nutrient.io to .env");
