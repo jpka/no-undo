@@ -135,28 +135,38 @@ if (!createDraft) {
     "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
     "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
 
+  // Schema confirmed live Aug 19 (Gate 0): the gateway wants inputType +
+  // base64FileString[] + fileNames[] + parties[], NOT a documents/recipients
+  // shape. Response nests the id at folder.folderId. sendNow:false alone
+  // (no createEmbeddedSigningSession) yields folderStatus DRAFT.
   const create = await req(`${GATEWAY}/esign/api/v1/folders/createfolder`, {
     method: "POST",
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({
       folderName: `no-undo-probe-${Date.now()}`,
+      inputType: "base64",
+      base64FileString: [tinyPdf],
+      fileNames: ["probe.pdf"],
+      processTextTags: false,
+      processAcroFields: false,
       sendNow: false, // <-- the entire point. never true in this file.
-      documents: [{ documentName: "probe.pdf", base64Content: tinyPdf }],
-      recipients: [
+      parties: [
         {
-          email: process.env.FOXIT_ESIGN_PROBE_EMAIL ?? "probe@example.invalid",
           firstName: "Probe",
           lastName: "Recipient",
-          recipientType: "SIGNER",
+          emailId: process.env.FOXIT_ESIGN_PROBE_EMAIL ?? "probe@example.invalid",
+          permission: "FILL_FIELDS_AND_SIGN",
+          sequence: 1,
         },
       ],
     }),
   });
 
   const folderId =
+    create.json?.folder?.folderId ??
+    create.json?.data?.folder?.folderId ??
     create.json?.folderId ??
     create.json?.data?.folderId ??
-    create.json?.result?.folderId ??
     null;
 
   record(
@@ -171,7 +181,11 @@ if (!createDraft) {
       { headers: gatewayHeaders() },
     );
     const folderStatus =
-      status.json?.folderStatus ?? status.json?.data?.folderStatus ?? null;
+      status.json?.folder?.folderStatus ??
+      status.json?.data?.folder?.folderStatus ??
+      status.json?.folderStatus ??
+      status.json?.data?.folderStatus ??
+      null;
     record(
       "3. folderStatus === DRAFT",
       folderStatus === "DRAFT" ? "ok" : "fail",

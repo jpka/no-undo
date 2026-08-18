@@ -1,6 +1,6 @@
 # DevNetwork [API + Cloud + AI] Hackathon 2026 — Build Plan
  
-**Status:** registered, online phase running. First batch landed Aug 18, ahead of its Aug 18–19 window; the recovered slack is spent on Gate 0 below. Plan revised Aug 18 — see `docs/review-aug18.md`.
+**Status:** registered, online phase running. First batch landed Aug 18 (ahead of its window); **Gate 0 landed Aug 19 — eSign 5/5 PASS, Nutrient Data Extraction blocked on a missing product key** (see `docs/gate0-aug19.md`). Plan revised Aug 18 (`docs/review-aug18.md`) and Aug 19 (Gate 0).
 **Hard deadline:** Sept 3, 2026, 10:00am PDT = **2:00pm Argentina time**. Not "end of day Sept 3."
 **Time budget assumed:** ~60 hours (a few full days plus evenings) across Aug 18 – Sep 2. *Revised Aug 18: the day-by-day now sums to ~62h of coding plus ~5h of PR/review overhead plus an unestimated Aug 31 freeze day — call it **~70h against a ~60h budget**. The gap is real. It is absorbed by the cut list, which is why the cut list is ordered and why the never-cut items are only two.*
 **Tracks targeted:** Foxit + Nutrient DWS + Overall. One project, three entries — the rules explicitly allow entering as many challenges as you want, and allow stacking sponsor prizes with Overall.
@@ -55,7 +55,7 @@ Also: no idempotency-key contract, no persisted state, `dataDigest` is advisory 
  
 ## Working constraints (added Aug 18 after the first batch — read before delegating)
  
-1. **Agent sandboxes cannot reach the vendor APIs.** Verified: `na1.fusion.foxit.com` and `api.nutrient.io` are unreachable from the sandbox; only `registry.npmjs.org` is allowlisted. Every live-API check is **human-run, on your machine**. Subagents write the probe, the adapter and the tests; you execute and paste back the transcript.
+1. **Agent sandboxes cannot reach the vendor APIs — *unless the sandbox runs on a networked machine*.** Verified in the Aug 18 sandbox: `na1.fusion.foxit.com` and `api.nutrient.io` were unreachable; only `registry.npmjs.org` was allowlisted. **Gate 0 (Aug 19) ran from a networked machine where all three hosts answered** — live probes were executed directly and their transcripts committed. Rule: *test connectivity first; if the host answers, execute and commit the transcript; if not, hand the probe to the human.* Every live-API check remains either way.
 2. **Therefore every vendor adapter gets a fixture seam on day one.** Agents test against recorded transcripts. Each stage ships one `node mcp/<vendor>/<stage>-probe.mjs` you run in a single command, with its output committed as the fixture. That is also judge-facing reproducibility for free.
 3. **`safe-write-mcp-core` stays its own repo** (it is published; servers A and C consume it) and is checked out alongside `No Undo`. Two PR streams, one `AGENTS.md` workflow. Core v0.2 lands there and is consumed here by version.
 4. **Budget the process.** `AGENTS.md` mandates PR → CI → review round → merge for any session that changes files; PR #1 cost one CodeRabbit round. Assume **~40 min per batch**, ~5h across the ~8 remaining batches. That is coding time you do not have — it is counted in the budget below. If it starts hurting, the decision to make is whether `AGENTS.md` should carve out docs-only changes; do not silently skip the ceremony instead.
@@ -69,34 +69,25 @@ Also: no idempotency-key contract, no persisted state, `dataDigest` is advisory 
 - Get Foxit's MCP server running locally against your own client. Confirm the toolset. **Done: `@foxitsoftware/foxit-pdf-api-mcp-server` runs against our keys, 40 tools listed, no signing tool, end-to-end `pdf_from_url` → `get_task_result` smoke test passed.**
 - **Verify whether Foxit eSign and Nutrient DWS support idempotency keys.** This blocks the core work below. If eSign has no idempotency header, the fallback is a client-side dedupe ledger keyed on the plan token — decide this before writing code, not during. **Decision locked: Foxit eSign has NO server-side idempotency (billing-only `request_id` dedup; sends deduped by folder `folderStatus DRAFT/SHARED` reconciliation). Nutrient DWS has `Idempotency-Key` only on async `POST /build` with `Prefer: respond-async`; `/processor/*` and `/extraction/*` have none. Baseline = client-side dedupe ledger keyed on plan token for eSign sends; per-operation digest (document SHA-256 + instructions) for Nutrient.**
  
-**Aug 19 — ~2h, from the recovered slack. GATE 0: prove eSign exists for us.** ⛔ *blocks everything below*
- 
-The first batch verified Foxit **PDF Services** live. It verified **nothing** about eSign or Nutrient — §2 and §3 of `docs/aug18-19.md` are spec-reading and blog-reading, excellent but untested. Four load-bearing assumptions are currently unexamined, and the first one can end the project:
- 
-- **Is our self-serve developer account entitled to eSign at all?** PDF Services and eSign are separately provisioned. Nothing has confirmed our credentials open `/esign/api/v1`. If they do not, "the one irreversible step is a signature send" has no API under it.
-- Does `createfolder` accept `sendNow:false` and return a `folderId` synchronously? The entire two-step crash-safe send depends on it.
-- Does `GET myfolder` report `folderStatus: DRAFT` for that folder? This is the reconciliation signal `confirmExecuted()` is built around.
-- Is there a reachable send-draft route, gateway or legacy? Already flagged as unknown in `docs/aug18-19.md` and wrongly deferred to Aug 23 — it decides whether the two-step flow exists.
- 
-Run `node mcp/foxit/esign-probe.mjs --create-draft` (sources `.env`; never sends, only drafts). Commit the transcript to `docs/`. **If the entitlement check fails, stop and pick a contingency within the hour — `docs/review-aug18.md` §5.** The pre-written fallback is to re-target the irreversible action at Foxit PDF Services' genuinely destructive tools (`delete`, password-`protect`), which keeps all three entries and every line of core work.
- 
-Same session, cheap: **a live Nutrient extraction call on one messy page**, confirming the response actually carries per-span confidence scores. The whole Nutrient-track argument is confidence-routed approval, and Data Extraction has no OpenAPI spec — docs only. Also check whether the free-tier key is a *test* key, since async `/build` idempotency is documented as unsupported on test keys.
- 
-Also this session, 15 minutes: **clone `safe-write-mcp-core` alongside this repo.** The next batch cannot start without it.
+**Aug 19 — ~2h, from the recovered slack. GATE 0: prove eSign exists for us.** ✅ DONE Aug 19 — see `docs/gate0-aug19.md`, fixtures in `docs/fixtures/`.
+
+- **Foxit eSign: 5/5 PASS.** Entitled (HTTP 200), `createfolder(sendNow:false)` returns `folderId`, `folderStatus` confirms `DRAFT`, and a **send-draft route exists on the gateway** — **locked as the send host** (same `client_id`/`client_secret` headers, no OAuth token). Legacy host exists as fallback. eSign shares the PDF Services credential pair. **Aug 20–22 core work proceeds.**
+- **Nutrient Data Extraction: BLOCKED.** `POST /extraction/parse` → **403**: Data Extraction is a separately provisioned product; our DWS Processor key is not entitled. **UNBLOCK (human, ~5 min): add `NUTRIENT_DWS_EXTRACTION_API_KEY` to `.env` from dashboard.nutrient.io.** Probe ships fixture-ready (`node mcp/nutrient/extraction-probe.mjs`); the 403 diagnostic is the committed fixture. Key is `pdf_live_` = **live**, so the async-`/build`-test-key caveat does not apply.
+- **`safe-write-mcp-core` cloned** at `../safe-write-mcp-core`. Critical-path repo is in place.
  
 **Aug 20–22 — ~14h. Core v0.2. The MUST list.**
 - Split `consume()` into `beginExecute()` → `confirmExecuted()` / `confirmFailed()`. `"executed"` is only audited after host confirmation. A plan stuck in `executing` past a timeout becomes a queryable state, not a silently forgotten one.
 - Durable journal: append-only, fsync'd, one line per token transition, so restart can detect "mid-execute."
 - Plan token as documented idempotency key. *(Confirmed Aug 18: eSign has no server key — the ledger IS the idempotency.)*
-- **Reconciliation is a host-supplied callback, not a vendor call.** *(Revised Aug 18.)* The original plan had the core implement the two-step eSign send while the gateway-vs-legacy host decision sat in the Aug 23–25 batch — a mis-ordered dependency. The ledger contract is indeed host-independent, but `confirmExecuted()`'s reconciliation is not. So the core takes a `reconcile(token) → 'done' | 'not-done' | 'unknown'` function from the host, exactly like the existing host-supplied `renderPlan` seam. The core then never names a vendor, which is also the portfolio-reuse property the original pitch asked for. Foxit's `folderStatus DRAFT/SHARED` check becomes one implementation of it.
+- **Reconciliation is a host-supplied callback, not a vendor call.** *(Revised Aug 18, send host locked Aug 19.)* The ledger contract is host-independent, but `confirmExecuted()`'s reconciliation is not. The core takes a `reconcile(token) → 'done' | 'not-done' | 'unknown'` function from the host. Foxit's implementation is the **gateway** `folderStatus DRAFT/SHARED` check via `GET /esign/api/v1/folders/myfolder?folderId=`, confirmed reachable in Gate 0 (legacy host is the fallback).
 - Core-enforced `dataDigest` re-check.
 - Tests for each, against **fixtures from Gate 0**, not the live API. Keep the suite green — 73/73 passing is a credibility asset in the repo.
  
 **Aug 23–25 — ~12h. The eSign adapter and agent loop.**
-Prompt → document → proposed send. Foxit MCP for the reversible work, your gate on the send. Implements the `reconcile` callback against whichever host Gate 0 confirmed. Includes the **webhook dedup on `(folderId, event_name)`** that `docs/aug18-19.md` identified and no day previously owned.
+Prompt → document → proposed send. Foxit MCP for the reversible work, your gate on the send. Implements the `reconcile` callback against the **gateway** send-draft host (locked in Gate 0) — `POST /esign/api/v1/folders/sendDraftFolder`. Includes the **webhook dedup on `(folderId, event_name)`** that `docs/aug18-19.md` identified and no day previously owned.
  
-**Aug 26–28 — ~12h. Nutrient stage.**
-Extraction with confidence thresholds routing low-confidence spans to the same approval gate, then redaction. Reuse one approval UI for both decisions — that unity is the design argument.
+**Aug 26–28 — ~12h. Nutrient stage.** *(Prereq added Aug 19: Data Extraction key in `.env` as `NUTRIENT_DWS_EXTRACTION_API_KEY` — the current key is Processor-only and 403s on `/extraction/parse`.)*
+Extraction with confidence thresholds routing low-confidence spans to the same approval gate, then redaction. Reuse one approval UI for both decisions — that unity is the design argument. First run of `node mcp/nutrient/extraction-probe.mjs` once the key lands; the fixture and probe already ship from Gate 0.
  
 **Aug 29–30 — ~8h. Audit and UI.**
 Hash-chained JSONL sink with `prevHash`. Approval page that renders the document and the recipient list, not `JSON.stringify`. Drop raw `payload` from `GET /api/plans` — right now a host's careful `renderPlan` redaction is silently bypassed by that endpoint, which is embarrassing in a PII demo.
@@ -128,7 +119,9 @@ Everything here is an asset you needed anyway:
 ---
  
 ## Open items
- 
+
+- **⚠ Human action (unblocks Aug 26–28): get a Nutrient Data Extraction API key** at `dashboard.nutrient.io` and add it to `.env` as `NUTRIENT_DWS_EXTRACTION_API_KEY`. The existing `NUTRIENT_API_KEY` is DWS-Processor-only (403 on `/extraction/parse`). Then run `node mcp/nutrient/extraction-probe.mjs` and commit the transcript. *This is the only open blocker; it does not hold up Aug 20–22 core work.*
 - Apptio, useBruno, and Wundergraph have not published their challenges. Wundergraph (GraphQL federation gateway) is the one most likely to fit a "safe write gateway" story. Re-check `/details/sponsors` around Aug 25 — a fourth free track is worth ten minutes of checking.
 - Foxit's listed contact email on the sponsor page has a typo (`...foxitsoftware.come`). Use the developer portal if you need support.
+- Two eSign probe drafts (`35426242`, `35426627`) are sitting in the eSign dashboard, unsent — delete when convenient.
 - Team size is 1–5. Solo is fine; a second person on the demo video would not hurt.
