@@ -60,7 +60,9 @@ The gateway's `createfolder` wants:
 
 ## 2. Nutrient DWS Data Extraction — BLOCKED: separately provisioned product, key needed.
 
-Script: `node mcp/nutrient/extraction-probe.mjs` → `docs/fixtures/nutrient-extraction-403.json`.
+Script: `node mcp/nutrient/extraction-probe.mjs --fixture` writes a timestamped capture to
+`docs/fixtures/` (by default the raw response goes to a temp dir; `--fixture` opts into tracking).
+The capture was renamed to a stable name for reference: `docs/fixtures/nutrient-extraction-403.json`.
 
 Attempted `POST https://api.nutrient.io/extraction/parse` (multipart `file` + `instructions`
 `{"mode":"understand","output":{"format":"spatial","includeWords":true}}`) with our `pdf_live_*`

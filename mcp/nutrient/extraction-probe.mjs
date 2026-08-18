@@ -36,7 +36,8 @@
  * Never sends anything irreversible: extraction is read-only.
  */
 
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -153,6 +154,7 @@ try {
     headers: { Authorization: `Bearer ${apiKey}` },
     body,
     signal: AbortSignal.timeout(90_000),
+    redirect: "error", // never replay the credentialed PDF upload onto a redirect target
   });
 } catch (err) {
   console.error(`[FAIL] network: ${String(err)} cause=${JSON.stringify(err.cause)}`);
@@ -165,10 +167,31 @@ const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 const wantFixture = process.argv.includes("--fixture");
 const fixturesDir = fileURLToPath(new URL("../../docs/fixtures/", import.meta.url));
 if (wantFixture) mkdirSync(fixturesDir, { recursive: true });
+
+// Temp responses go in a fresh exclusive mode-0o600 dir so nothing document-
+// derived leaks into the tracked repo, names are unpredictable, and cleanup is
+// deterministic. Fixture captures get a unique suffix and exclusive create so a
+// same-second re-run never silently overwrites a committed fixture.
+const tempDir = mkdtempSync(join(tmpdir(), "no-undo-extraction-"));
 const outPath = wantFixture
-  ? join(fixturesDir, `nutrient-extraction-${stamp}.json`)
-  : join(tmpdir(), `no-undo-extraction-${stamp}.json`);
-writeFileSync(outPath, raw);
+  ? join(fixturesDir, `nutrient-extraction-${stamp}-${randomBytes(3).toString("hex")}.json`)
+  : join(tempDir, "response.json");
+let wrote = false;
+try {
+  writeFileSync(outPath, raw, { flag: "wx", mode: 0o600 });
+  wrote = true;
+} catch (err) {
+  console.error(`[FAIL] could not write response: ${String(err)}`);
+  process.exit(1);
+}
+process.on("exit", () => {
+  if (!wantFixture && wrote) {
+    try {
+      unlinkSync(outPath);
+      rmdirSync(tempDir);
+    } catch { /* best effort */ }
+  }
+});
 
 console.log(`[HTTP ${res.status} in ${ms}ms] ${EXTRACT}`);
 console.log(`response saved: ${outPath}`);

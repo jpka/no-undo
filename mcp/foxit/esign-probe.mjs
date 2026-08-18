@@ -71,8 +71,17 @@ async function req(url, init = {}) {
   }
 }
 
+// Redact account identity fields from transcripts before they are printed or
+// committed as fixtures: author id/company id are numeric, identity fields are
+// strings. Preserves structure for the adapter tests that replay these.
+function sanitize(text) {
+  return text
+    .replace(/("folderAuthorId"|"folderCompanyId")\s*:\s*\d+/g, '$1:0')
+    .replace(/("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*"[^"]*"/g, '$1:"[redacted]"');
+}
+
 function summarize(r, max = 400) {
-  return `HTTP ${r.status} in ${r.ms}ms :: ${r.text.slice(0, max)}`;
+  return `HTTP ${r.status} in ${r.ms}ms :: ${sanitize(r.text).slice(0, max)}`;
 }
 
 // --- 1. Entitlement -------------------------------------------------------
