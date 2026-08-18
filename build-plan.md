@@ -30,7 +30,7 @@ The original pitch's architectural warning still stands and is now nearly free: 
 2. **Nutrient DWS** — data extraction with confidence scores; spans below threshold route to the human. Then PII redaction. *(This is Nutrient's own suggested scenario #5, and it makes DWS load-bearing rather than decorative — which is their stated bar: "for at least one core document operation, meaningfully.")*
 3. **Foxit's MCP server** — assembly, conversion, OCR, merge. All reversible, all unattended, using their published toolset as intended.
 4. **The gate.** Agent proposes an eSign send. The plan preview shows recipients, document digest, and an explicit irrevocability warning. Human approves or rejects.
-5. **Foxit eSign API** called directly with an idempotency key, then a hash-chained append-only audit record.
+5. **Foxit eSign API** called directly with **client-side dedup**: the plan token keys a durable ledger, and a `folderStatus` reconciliation (DRAFT vs SHARED) ensures the send happens exactly once — then a hash-chained append-only audit record.
  
 **Why this can win Overall, not just a sponsor track.** Overall is judged on Progress, Concept, and Feasibility. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core — the commercial story is not hypothetical, it's your Upwork listing.
  
