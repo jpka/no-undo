@@ -72,16 +72,35 @@ async function req(url, init = {}) {
 }
 
 // Redact account identity fields from transcripts before they are printed or
-// committed as fixtures: author id/company id are numeric, identity fields are
-// strings. Preserves structure for the adapter tests that replay these.
-function sanitize(text) {
+// committed as fixtures. Prefer structural redaction on the already-parsed JSON
+// (immune to escaping); fall back to string matching for non-JSON bodies.
+const IDENTITY_INT = new Set(["folderAuthorId", "folderCompanyId"]);
+const IDENTITY_STR = new Set(["folderAuthorEmail", "folderAuthorFirstName", "folderAuthorLastName"]);
+
+function redactJson(node) {
+  if (Array.isArray(node)) return node.map(redactJson);
+  if (node && typeof node === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (IDENTITY_INT.has(k) && typeof v === "number") out[k] = 0;
+      else if (IDENTITY_STR.has(k) && typeof v === "string") out[k] = "[redacted]";
+      else out[k] = redactJson(v);
+    }
+    return out;
+  }
+  return node;
+}
+
+function redactString(text) {
   return text
     .replace(/("folderAuthorId"|"folderCompanyId")\s*:\s*\d+/g, '$1:0')
-    .replace(/("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*"[^"]*"/g, '$1:"[redacted]"');
+    .replace(/(("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*")(\\.|[^"\\])*(")/g, '$1[redacted]$4')
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, "[email redacted]");
 }
 
 function summarize(r, max = 400) {
-  return `HTTP ${r.status} in ${r.ms}ms :: ${sanitize(r.text).slice(0, max)}`;
+  const body = r.json ? JSON.stringify(redactJson(r.json)) : redactString(r.text);
+  return `HTTP ${r.status} in ${r.ms}ms :: ${body.slice(0, max)}`;
 }
 
 // --- 1. Entitlement -------------------------------------------------------
