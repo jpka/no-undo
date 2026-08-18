@@ -1,0 +1,11 @@
+{
+  "name": "no-undo-mcp-foxit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local verification tooling for the Foxit PDF API MCP server",
+  "dependencies": {
+    "@foxitsoftware/foxit-pdf-api-mcp-server": "1.1.2",
+    "@modelcontextprotocol/sdk": "^1.12.0"
+  }
+}
