@@ -75,13 +75,15 @@ Also: no idempotency-key contract, no persisted state, `dataDigest` is advisory 
 - **Nutrient Data Extraction: BLOCKED.** `POST /extraction/parse` → **403**: Data Extraction is a separately provisioned product; our DWS Processor key is not entitled. **UNBLOCK (human, ~5 min): add `NUTRIENT_DWS_EXTRACTION_API_KEY` to `.env` from dashboard.nutrient.io.** Probe ships fixture-ready (`node mcp/nutrient/extraction-probe.mjs`); the 403 diagnostic is the committed fixture. Key is `pdf_live_` = **live**, so the async-`/build`-test-key caveat does not apply.
 - **`safe-write-mcp-core` cloned** at `../safe-write-mcp-core`. Critical-path repo is in place.
  
-**Aug 20–22 — ~14h. Core v0.2. The MUST list.**
-- Split `consume()` into `beginExecute()` → `confirmExecuted()` / `confirmFailed()`. `"executed"` is only audited after host confirmation. A plan stuck in `executing` past a timeout becomes a queryable state, not a silently forgotten one.
-- Durable journal: append-only, fsync'd, one line per token transition, so restart can detect "mid-execute."
-- Plan token as documented idempotency key. *(Confirmed Aug 18: eSign has no server key — the ledger IS the idempotency.)*
-- **Reconciliation is a host-supplied callback, not a vendor call.** *(Revised Aug 18, send host locked Aug 18.)* The ledger contract is host-independent, but `confirmExecuted()`'s reconciliation is not. The core takes a `reconcile(token) → 'done' | 'not-done' | 'unknown'` function from the host. Foxit's implementation is the **gateway** `folderStatus DRAFT/SHARED` check via `GET /esign/api/v1/folders/myfolder?folderId=`, confirmed reachable in Gate 0 (legacy host is the fallback).
-- Core-enforced `dataDigest` re-check.
-- Tests for each, against **fixtures from Gate 0**, not the live API. Keep the suite green — 73/73 passing is a credibility asset in the repo.
+**Aug 20–22 — ~14h. Core v0.2. The MUST list.** ✅ DONE Aug 19, a day early — see `safe-write-mcp-core` [PR #15](https://github.com/jpka/safe-write-mcp-core/pull/15) (`Closes #14`), merged as `0cbe5e7`.
+- Split `consume()` into `beginExecute()` → `confirmExecuted()` / `confirmFailed()`. `"executed"` is only audited after host confirmation. A plan stuck in `executing` past a timeout becomes a queryable state, not a silently forgotten one. **Done**: `consume()` kept as a documented, explicitly-not-crash-safe legacy wrapper; `listExecuting()` surfaces stuck plans.
+- Durable journal: append-only, fsync'd, one line per token transition, so restart can detect "mid-execute." **Done**: `src/journal.ts`, streamed replay (no whole-file read), 0o600 perms, parent-directory fsync so a fresh journal survives a power loss, broken-descriptor guard on partial/serialize write failures.
+- Plan token as documented idempotency key. *(Confirmed Aug 18: eSign has no server key — the ledger IS the idempotency.)* **Done**, documented on `PlanCreated`/`beginExecute`.
+- **Reconciliation is a host-supplied callback, not a vendor call.** *(Revised Aug 18, send host locked Aug 18.)* The ledger contract is host-independent, but `confirmExecuted()`'s reconciliation is not. The core takes a `reconcile(token) → 'done' | 'not-done' | 'unknown'` function from the host. Foxit's implementation is the **gateway** `folderStatus DRAFT/SHARED` check via `GET /esign/api/v1/folders/myfolder?folderId=`, confirmed reachable in Gate 0 (legacy host is the fallback). **Core done**: `PlanStoreOptions.reconcile`, bounded by `reconcileTimeoutMs` so a hanging host hook can't stall recovery. The Foxit-specific `reconcile` implementation still lands with the eSign adapter (Aug 23–25).
+- Core-enforced `dataDigest` re-check. **Done**: `beginExecute()` fails closed with `DATA_DIGEST_MISMATCH`.
+- Tests for each, against **fixtures from Gate 0**, not the live API. Keep the suite green — 73/73 passing is a credibility asset in the repo. **Done**: 108/108 passing (73 pre-existing + 35 new).
+
+*Delegated to `opencode run -m opencode/deepseek-v4-flash-free` across three rounds (initial implementation, then two CodeRabbit review-fix rounds), reviewed and merged by Claude Code.*
  
 **Aug 23–25 — ~12h. The eSign adapter and agent loop.**
 Prompt → document → proposed send. Foxit MCP for the reversible work, your gate on the send. Implements the `reconcile` callback against the **gateway** send-draft host (locked in Gate 0) — `POST /esign/api/v1/folders/sendDraftFolder`. Includes the **webhook dedup on `(folderId, event_name)`** that `docs/aug18-19.md` identified and no day previously owned.
