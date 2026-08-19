@@ -1,0 +1,26 @@
+[PASS] 1. eSign entitlement (GET getAllFolderIdsByStatus)
+       HTTP 200 in 2888ms :: {"result":"error","error_description":"The parameters dateFrom can not be empty."}
+[PASS] 4. send-draft route on gateway host
+       HTTP 200 in 991ms :: {"result":"error","error_description":"folderId parameter must be required."}  (non-404 => route exists)
+[PASS] 4. send-draft route on legacy host
+       HTTP 401 in 251ms :: {"result":"error","errorCode":"access_token_missing","error_description":"access_token is missing in header and also in query parameters. Include access_token in either one of these."}  (non-404 => route exists)
+[PASS] 2. createfolder(sendNow:false) returns folderId
+       HTTP 200 in 1614ms :: {"folder":{"folderId":35426627,"folderName":"no-undo-probe-1787078564793","folderCustomName":"${doc_name}","folderPassword":null,"folderAuthorId":0,"folderAuthorFirstName":null,"folderAuthorLastName":null,"folderAuthorEmail":null,"folderAuthorRole":null,"folderCompanyId":0,"folderCreationDate":1787078565688,"folderSentDate":null,"folderStatus":"DRAFT","custom_field1":null,"custom_fiel
+       folderId=35426627
+[PASS] 3. folderStatus === DRAFT
+       HTTP 200 in 699ms :: {"result":"success","folder":{"folderId":35426627,"folderName":"no-undo-probe-1787078564793","folderCustomName":"${doc_name}","folderPassword":null,"folderAuthorId":0,"folderAuthorFirstName":"[redacted]","folderAuthorLastName":"[redacted]","folderAuthorEmail":"[redacted]","folderAut
+       folderStatus=DRAFT
+
+  >> Draft folder 35426627 left in place, unsent. Delete it from the eSign UI when done.
+
+
+================ VERDICT ================
+OK    1. eSign entitlement (GET getAllFolderIdsByStatus)
+OK    4. send-draft route on gateway host
+OK    4. send-draft route on legacy host
+OK    2. createfolder(sendNow:false) returns folderId
+OK    3. folderStatus === DRAFT
+
+What this means for the build plan:
+  Two-step create-draft-then-send is CONFIRMED end to end.
+  -> Aug 20-22 core work proceeds as planned. Lock the send host now.

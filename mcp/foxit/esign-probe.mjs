@@ -42,6 +42,7 @@ if (!clientId || !clientSecret) {
 const createDraft = process.argv.includes("--create-draft");
 const results = [];
 
+/** Records a test result with its name, verdict (ok/fail/skip), and optional detail message. */
 function record(name, verdict, detail) {
   results.push({ name, verdict, detail });
   const mark = verdict === "ok" ? "PASS" : verdict === "skip" ? "SKIP" : "FAIL";
@@ -49,11 +50,12 @@ function record(name, verdict, detail) {
   if (detail) console.log(`       ${detail}`);
 }
 
-/** Gateway auth is client_id/client_secret headers, per the DevPortal reference. */
+/** Returns HTTP headers with Foxit gateway credentials and optional extra headers. */
 function gatewayHeaders(extra = {}) {
   return { client_id: clientId, client_secret: clientSecret, ...extra };
 }
 
+/** Makes an HTTP request with timeout and returns response status, text, parsed JSON (if any), and elapsed time. */
 async function req(url, init = {}) {
   const started = Date.now();
   try {
@@ -71,8 +73,39 @@ async function req(url, init = {}) {
   }
 }
 
+// Redact account identity fields from transcripts before they are printed or
+// committed as fixtures. Prefer structural redaction on the already-parsed JSON
+// (immune to escaping); fall back to string matching for non-JSON bodies.
+const IDENTITY_INT = new Set(["folderAuthorId", "folderCompanyId"]);
+const IDENTITY_STR = new Set(["folderAuthorEmail", "folderAuthorFirstName", "folderAuthorLastName"]);
+
+/** Recursively redacts identity fields (folderAuthorId, folderCompanyId, email, names) from JSON objects. */
+function redactJson(node) {
+  if (Array.isArray(node)) return node.map(redactJson);
+  if (node && typeof node === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (IDENTITY_INT.has(k) && typeof v === "number") out[k] = 0;
+      else if (IDENTITY_STR.has(k) && typeof v === "string") out[k] = "[redacted]";
+      else out[k] = redactJson(v);
+    }
+    return out;
+  }
+  return node;
+}
+
+/** Redacts identity fields from unparsed strings using regex pattern matching. */
+function redactString(text) {
+  return text
+    .replace(/("folderAuthorId"|"folderCompanyId")\s*:\s*\d+/g, '$1:0')
+    .replace(/(("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*")(\\.|[^"\\])*(")/g, '$1[redacted]$4')
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, "[email redacted]");
+}
+
+/** Formats an HTTP response for display, redacting identity data and truncating to max length. */
 function summarize(r, max = 400) {
-  return `HTTP ${r.status} in ${r.ms}ms :: ${r.text.slice(0, max)}`;
+  const body = r.json ? JSON.stringify(redactJson(r.json)) : redactString(r.text);
+  return `HTTP ${r.status} in ${r.ms}ms :: ${body.slice(0, max)}`;
 }
 
 // --- 1. Entitlement -------------------------------------------------------
@@ -135,28 +168,38 @@ if (!createDraft) {
     "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
     "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
 
+  // Schema confirmed live Aug 18 (Gate 0): the gateway wants inputType +
+  // base64FileString[] + fileNames[] + parties[], NOT a documents/recipients
+  // shape. Response nests the id at folder.folderId. sendNow:false alone
+  // (no createEmbeddedSigningSession) yields folderStatus DRAFT.
   const create = await req(`${GATEWAY}/esign/api/v1/folders/createfolder`, {
     method: "POST",
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({
       folderName: `no-undo-probe-${Date.now()}`,
+      inputType: "base64",
+      base64FileString: [tinyPdf],
+      fileNames: ["probe.pdf"],
+      processTextTags: false,
+      processAcroFields: false,
       sendNow: false, // <-- the entire point. never true in this file.
-      documents: [{ documentName: "probe.pdf", base64Content: tinyPdf }],
-      recipients: [
+      parties: [
         {
-          email: process.env.FOXIT_ESIGN_PROBE_EMAIL ?? "probe@example.invalid",
           firstName: "Probe",
           lastName: "Recipient",
-          recipientType: "SIGNER",
+          emailId: process.env.FOXIT_ESIGN_PROBE_EMAIL ?? "probe@example.invalid",
+          permission: "FILL_FIELDS_AND_SIGN",
+          sequence: 1,
         },
       ],
     }),
   });
 
   const folderId =
+    create.json?.folder?.folderId ??
+    create.json?.data?.folder?.folderId ??
     create.json?.folderId ??
     create.json?.data?.folderId ??
-    create.json?.result?.folderId ??
     null;
 
   record(
@@ -171,7 +214,11 @@ if (!createDraft) {
       { headers: gatewayHeaders() },
     );
     const folderStatus =
-      status.json?.folderStatus ?? status.json?.data?.folderStatus ?? null;
+      status.json?.folder?.folderStatus ??
+      status.json?.data?.folder?.folderStatus ??
+      status.json?.folderStatus ??
+      status.json?.data?.folderStatus ??
+      null;
     record(
       "3. folderStatus === DRAFT",
       folderStatus === "DRAFT" ? "ok" : "fail",
