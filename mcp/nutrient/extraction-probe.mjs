@@ -65,6 +65,7 @@ const explicitFile = fileIdx !== -1 ? process.argv[fileIdx + 1] : undefined;
 // rectangles (stains), and a freehand signature polyline. OCR-reads with
 // imperfect, varied confidence — exactly the low-confidence spans the gate is for.
 
+/** Generates a minimal test PDF with skewed lines, stains, and signature to test extraction confidence scoring. */
 function messyPdf() {
   const content = [];
   const push = (s) => content.push(s);
@@ -218,7 +219,7 @@ if (res.status === 200) {
     if (!a.length) return null;
     const s = [...a].sort((x, y) => x - y);
     return s[Math.floor(s.length / 2)];
-  };
+  }; // Calculates the median of an array of numbers.
   console.log(`[PASS] extraction returned ${elements.length} elements`);
   console.log(`  confidence: min=${confs.length ? Math.min(...confs).toFixed(3) : "n/a"} ` +
     `median=${median(confs)?.toFixed(3) ?? "n/a"} max=${confs.length ? Math.max(...confs).toFixed(3) : "n/a"}`);
