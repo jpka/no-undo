@@ -42,6 +42,7 @@ if (!clientId || !clientSecret) {
 const createDraft = process.argv.includes("--create-draft");
 const results = [];
 
+/** Records a test result with its name, verdict (ok/fail/skip), and optional detail message. */
 function record(name, verdict, detail) {
   results.push({ name, verdict, detail });
   const mark = verdict === "ok" ? "PASS" : verdict === "skip" ? "SKIP" : "FAIL";
@@ -49,11 +50,12 @@ function record(name, verdict, detail) {
   if (detail) console.log(`       ${detail}`);
 }
 
-/** Gateway auth is client_id/client_secret headers, per the DevPortal reference. */
+/** Returns HTTP headers with Foxit gateway credentials and optional extra headers. */
 function gatewayHeaders(extra = {}) {
   return { client_id: clientId, client_secret: clientSecret, ...extra };
 }
 
+/** Makes an HTTP request with timeout and returns response status, text, parsed JSON (if any), and elapsed time. */
 async function req(url, init = {}) {
   const started = Date.now();
   try {
@@ -77,6 +79,7 @@ async function req(url, init = {}) {
 const IDENTITY_INT = new Set(["folderAuthorId", "folderCompanyId"]);
 const IDENTITY_STR = new Set(["folderAuthorEmail", "folderAuthorFirstName", "folderAuthorLastName"]);
 
+/** Recursively redacts identity fields (folderAuthorId, folderCompanyId, email, names) from JSON objects. */
 function redactJson(node) {
   if (Array.isArray(node)) return node.map(redactJson);
   if (node && typeof node === "object") {
@@ -91,6 +94,7 @@ function redactJson(node) {
   return node;
 }
 
+/** Redacts identity fields from unparsed strings using regex pattern matching. */
 function redactString(text) {
   return text
     .replace(/("folderAuthorId"|"folderCompanyId")\s*:\s*\d+/g, '$1:0')
@@ -98,6 +102,7 @@ function redactString(text) {
     .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, "[email redacted]");
 }
 
+/** Formats an HTTP response for display, redacting identity data and truncating to max length. */
 function summarize(r, max = 400) {
   const body = r.json ? JSON.stringify(redactJson(r.json)) : redactString(r.text);
   return `HTTP ${r.status} in ${r.ms}ms :: ${body.slice(0, max)}`;
