@@ -24,7 +24,7 @@
  */
 
 import { PlanStore } from "../../safe-write-mcp-core/src/index.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const GATEWAY = process.env.FOXIT_ESIGN_HOST ?? "https://na1.fusion.foxit.com";
@@ -73,7 +73,11 @@ function gatewayHeaders(extra = {}) {
 async function req(url, init = {}) {
   const started = Date.now();
   try {
-    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(30_000) });
+    const res = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(30_000),
+      redirect: "error", // don't follow redirects — could leak credentials to untrusted hosts
+    });
     const text = await res.text();
     let json;
     try {
@@ -120,14 +124,35 @@ class DurableStore {
       const raw = readFileSync(this.path, "utf8");
       const obj = JSON.parse(raw);
       this.data = new Map(Object.entries(obj));
-    } catch {
-      this.data = new Map();
+    } catch (err) {
+      // Only treat a missing file as empty initial state. Malformed existing
+      // state is propagated so a corrupt file isn't silently replaced.
+      if (err.code === "ENOENT") {
+        this.data = new Map();
+      } else {
+        throw err;
+      }
     }
   }
 
   save() {
     const obj = Object.fromEntries(this.data);
-    writeFileSync(this.path, JSON.stringify(obj, null, 2), "utf8");
+    const serialized = JSON.stringify(obj, null, 2);
+    // Atomic write: write to a temp file in the same directory, then rename.
+    // A crash mid-write can't corrupt the existing file.
+    const tmpPath = `${this.path}.tmp`;
+    try {
+      writeFileSync(tmpPath, serialized, "utf8");
+      renameSync(tmpPath, this.path);
+    } catch (err) {
+      // Clean up temp file on failure
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // ignore cleanup errors
+      }
+      throw err;
+    }
   }
 
   /** @param {string} key */
@@ -282,7 +307,7 @@ export async function loadEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
   // fromJournal is a static factory: it replays the journal, loads recovered
   // executing plans into a new store, reconciles them, and returns it.
-  return PlanStore.fromJournal(journalPath, {
+  const store = await PlanStore.fromJournal(journalPath, {
     ...options,
     journalPath,
     reconcile: async (planToken) => {
@@ -300,6 +325,18 @@ export async function loadEsignStore(journalPath, options = {}) {
     },
     reconcileTimeoutMs: options.reconcileTimeoutMs ?? 10_000,
   });
+  // Rebuild tokenToFolder from recovered executing plans' extra.folderId as a
+  // fallback — if the durable store file was lost, the journal's extra field
+  // is the authoritative source for folderId mappings.
+  if (tokenToFolder) {
+    for (const plan of store.listExecuting()) {
+      const folderId = plan.extra?.folderId;
+      if (folderId && !tokenToFolder.has(plan.planToken)) {
+        tokenToFolder.set(plan.planToken, folderId);
+      }
+    }
+  }
+  return store;
 }
 
 // --- Public adapter API ------------------------------------------------------
@@ -431,18 +468,20 @@ export async function confirmEsignExecuted(store, planToken) {
  */
 export async function confirmEsignFailed(store, planToken, reason) {
   const folderId = tokenToFolder?.get(planToken);
-  if (folderId) {
-    const status = await checkFolderStatus(folderId);
-    if (status === "SHARED") {
-      // The send actually succeeded — releasing would allow a duplicate send.
-      return { ok: false, error: "folder status is SHARED — send succeeded, use confirmEsignExecuted" };
-    }
-    if (status === null) {
-      // Unknown outcome — retain executing state for reconciliation.
-      return { ok: false, error: "folder status unknown — plan retained for reconciliation" };
-    }
-    // status === "DRAFT": send truly failed, safe to release.
+  if (!folderId) {
+    // No mapping — can't verify send status. Retain executing for reconciliation.
+    return { ok: false, error: "no folderId mapping — plan retained for reconciliation" };
   }
+  const status = await checkFolderStatus(folderId);
+  if (status === "SHARED") {
+    // The send actually succeeded — releasing would allow a duplicate send.
+    return { ok: false, error: "folder status is SHARED — send succeeded, use confirmEsignExecuted" };
+  }
+  if (status === null) {
+    // Unknown outcome — retain executing state for reconciliation.
+    return { ok: false, error: "folder status unknown — plan retained for reconciliation" };
+  }
+  // status === "DRAFT": send truly failed, safe to release.
   const result = await store.confirmFailed(planToken);
   if (!result.ok && result.error) {
     return { ok: false, error: result.error.message };
