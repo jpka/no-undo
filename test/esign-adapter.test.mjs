@@ -52,6 +52,10 @@ function defaultFixtures() {
 let originalFetch;
 
 beforeEach(() => {
+  // Set dummy credentials so the adapter's lazy credential check passes.
+  // Tests mock fetch, so these never reach the real API.
+  process.env.FOXIT_CLIENT_ID = "test-client-id";
+  process.env.FOXIT_CLIENT_SECRET = "test-client-secret";
   defaultFixtures();
   originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
