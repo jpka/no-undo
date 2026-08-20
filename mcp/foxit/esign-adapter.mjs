@@ -17,16 +17,37 @@
  * gateway actually sent it (folderStatus DRAFT = not done, SHARED = done).
  *
  * Webhook dedup: the gateway fires events on (folderId, event_name). We track
- * seen pairs to avoid double-processing.
+ * seen pairs to avoid double-handling.
  *
  * Gate 0 fixtures (docs/fixtures/esign-probe-aug18.txt) are the test replay
  * source — these tests do NOT call the live API.
  */
 
 import { PlanStore } from "../../safe-write-mcp-core/src/index.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const GATEWAY = process.env.FOXIT_ESIGN_HOST ?? "https://na1.fusion.foxit.com";
 const LEGACY = process.env.FOXIT_ESIGN_LEGACY_HOST ?? "https://na1.foxitesign.foxit.com";
+
+// --- HTTPS enforcement (CodeRabbit finding #4) --------------------------
+// A non-HTTPS gateway would leak client_secret in cleartext. Fail fast at
+// module load so a misconfigured env never sends credentials over HTTP.
+for (const [name, url] of [
+  ["FOXIT_ESIGN_HOST", GATEWAY],
+  ["FOXIT_ESIGN_LEGACY_HOST", LEGACY],
+]) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") {
+      console.error(`[esign-adapter] ${name} must use HTTPS, got: ${url}`);
+      process.exit(1);
+    }
+  } catch {
+    console.error(`[esign-adapter] ${name} is not a valid URL: ${url}`);
+    process.exit(1);
+  }
+}
 
 const clientId = process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID;
 const clientSecret =
@@ -47,7 +68,7 @@ function gatewayHeaders(extra = {}) {
 /**
  * @param {string} url
  * @param {RequestInit} [init]
- * @returns {Promise<{ok: boolean, status: number, text: string, json: any, ms: number}>}
+ * @returns {Promise<{ok: boolean, status: number, text: string, json: any, ms: number, transportError: boolean}>}
  */
 async function req(url, init = {}) {
   const started = Date.now();
@@ -60,22 +81,97 @@ async function req(url, init = {}) {
     } catch {
       /* non-JSON body */
     }
-    return { ok: res.ok, status: res.status, text, json, ms: Date.now() - started };
+    return {
+      ok: res.ok,
+      status: res.status,
+      text,
+      json,
+      ms: Date.now() - started,
+      transportError: false,
+    };
   } catch (err) {
-    return { ok: false, status: 0, text: String(err), json: undefined, ms: Date.now() - started };
+    return {
+      ok: false,
+      status: 0,
+      text: String(err),
+      json: undefined,
+      ms: Date.now() - started,
+      transportError: true,
+    };
   }
 }
 
-// --- Token → folderId mapping ----------------------------------------------
-// The reconcile callback only receives the planToken; this map lets it find
-// the folderId to check. In a production deployment this would be a durable
-// lookup; for the hackathon it is process-local.
-const tokenToFolder = new Map();
+// --- Durable stores (CodeRabbit findings #1 and #2) ---------------------
+// Both the tokenToFolder lookup and the webhook dedup Set were process-local
+// in PR #5 — lost on restart. We back them with JSON files alongside the
+// journal so a restarted process can still reconcile stuck plans and dedup
+// gateway retry events.
+
+class DurableStore {
+  /** @param {string} path */
+  constructor(path) {
+    this.path = path;
+    this.data = new Map();
+    this.load();
+  }
+
+  load() {
+    try {
+      const raw = readFileSync(this.path, "utf8");
+      const obj = JSON.parse(raw);
+      this.data = new Map(Object.entries(obj));
+    } catch {
+      this.data = new Map();
+    }
+  }
+
+  save() {
+    const obj = Object.fromEntries(this.data);
+    writeFileSync(this.path, JSON.stringify(obj, null, 2), "utf8");
+  }
+
+  /** @param {string} key */
+  get(key) {
+    return this.data.get(key);
+  }
+
+  /** @param {string} key @param {unknown} value */
+  set(key, value) {
+    this.data.set(key, value);
+    this.save();
+  }
+
+  /** @param {string} key */
+  has(key) {
+    return this.data.has(key);
+  }
+
+  /** @param {string} key */
+  delete(key) {
+    const result = this.data.delete(key);
+    this.save();
+    return result;
+  }
+}
+
+// Module-level durable stores — initialized by createEsignStore / loadEsignStore.
+let tokenToFolder = null;
+let processedEvents = null;
+
+/**
+ * Initialize durable stores alongside the journal file.
+ * @param {string} journalPath
+ */
+function initDurableStores(journalPath) {
+  if (!journalPath) return;
+  const baseDir = dirname(journalPath);
+  tokenToFolder = new DurableStore(join(baseDir, ".token-map.json"));
+  processedEvents = new DurableStore(join(baseDir, ".webhook-dedup.json"));
+}
 
 // --- Webhook dedup ----------------------------------------------------------
 // Gateway fires events on (folderId, event_name). A SHARED status means the
 // folder was sent. We track processed pairs to avoid double-handling.
-const processedEvents = new Set();
 
 /** @param {string} folderId */
 /** @param {string} eventName */
@@ -86,13 +182,13 @@ function webhookKey(folderId, eventName) {
 /** @param {string} folderId */
 /** @param {string} eventName */
 function hasProcessedWebhook(folderId, eventName) {
-  return processedEvents.has(webhookKey(folderId, eventName));
+  return processedEvents?.has(webhookKey(folderId, eventName)) ?? false;
 }
 
 /** @param {string} folderId */
 /** @param {string} eventName */
 function markWebhookProcessed(folderId, eventName) {
-  processedEvents.add(webhookKey(folderId, eventName));
+  processedEvents?.set(webhookKey(folderId, eventName), true);
 }
 
 // --- Folder status check (reconcile callback) -------------------------------
@@ -124,7 +220,7 @@ export async function checkFolderStatus(folderId) {
  * once it succeeds, the folder status flips from DRAFT to SHARED and the
  * signers receive their emails.
  * @param {string} folderId
- * @returns {Promise<{ok: boolean, status: number}>}
+ * @returns {Promise<{ok: boolean, status: number, transportError: boolean}>}
  */
 export async function sendDraftFolder(folderId) {
   const r = await req(`${GATEWAY}/esign/api/v1/folders/sendDraftFolder`, {
@@ -132,7 +228,7 @@ export async function sendDraftFolder(folderId) {
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ folderId }),
   });
-  return { ok: r.ok && r.status === 200, status: r.status };
+  return { ok: r.ok && r.status === 200, status: r.status, transportError: r.transportError };
 }
 
 // --- Plan store with reconcile ----------------------------------------------
@@ -145,19 +241,24 @@ export async function sendDraftFolder(folderId) {
  * @returns {PlanStore<EsignPayload>}
  */
 export function createEsignStore(journalPath) {
+  initDurableStores(journalPath);
   return new PlanStore({
     planTtlMs: 5 * 60 * 1000, // 5 minutes — eSign sends should settle quickly
     audit: {
       record: (event) => {
-        console.log(`[esign-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`);
+        console.log(
+          `[esign-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
+        );
         return undefined;
       },
     },
     journalPath,
     reconcile: async (planToken) => {
-      const folderId = tokenToFolder.get(planToken);
+      const folderId = tokenToFolder?.get(planToken);
       if (!folderId) {
-        console.error(`[esign-adapter] no folderId for token ${planToken.slice(0, 8)}, cannot reconcile`);
+        console.error(
+          `[esign-adapter] no folderId for token ${planToken.slice(0, 8)}, cannot reconcile`,
+        );
         return "unknown";
       }
       const status = await checkFolderStatus(folderId);
@@ -166,6 +267,38 @@ export function createEsignStore(journalPath) {
       return "unknown";
     },
     reconcileTimeoutMs: 10_000, // eSign status check is fast; 10s is generous
+  });
+}
+
+/**
+ * Load a PlanStore from a journal file for restart recovery. Replays the
+ * journal, hydrates durable tokenToFolder and processedEvents stores, and
+ * reconciles any stuck-executing plans.
+ * @param {string} journalPath
+ * @param {Partial<import("../../safe-write-mcp-core/src/index.js").PlanStoreOptions>} [options]
+ * @returns {Promise<PlanStore<EsignPayload>>}
+ */
+export async function loadEsignStore(journalPath, options = {}) {
+  initDurableStores(journalPath);
+  // fromJournal is a static factory: it replays the journal, loads recovered
+  // executing plans into a new store, reconciles them, and returns it.
+  return PlanStore.fromJournal(journalPath, {
+    ...options,
+    journalPath,
+    reconcile: async (planToken) => {
+      const folderId = tokenToFolder?.get(planToken);
+      if (!folderId) {
+        console.error(
+          `[esign-adapter] no folderId for token ${planToken.slice(0, 8)}, cannot reconcile`,
+        );
+        return "unknown";
+      }
+      const status = await checkFolderStatus(folderId);
+      if (status === "SHARED") return "done";
+      if (status === "DRAFT") return "not-done";
+      return "unknown";
+    },
+    reconcileTimeoutMs: options.reconcileTimeoutMs ?? 10_000,
   });
 }
 
@@ -188,11 +321,7 @@ export function createEsignStore(journalPath) {
  * @param {Partial<import("../../safe-write-mcp-core/src/index.js").PlanCreateOptions>} [options]
  * @returns {Promise<{planToken: string, folderId: string} | {error: string, status?: number}>}
  */
-export async function createEsignFolder(
-  store,
-  payload,
-  options = {},
-) {
+export async function createEsignFolder(store, payload, options = {}) {
   // Minimal one-page PDF as a placeholder document for the draft.
   // In production this would come from the Foxit MCP's assembly tools.
   const tinyPdf =
@@ -200,7 +329,6 @@ export async function createEsignFolder(
     "IG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8" +
     "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
     "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
-
   // Call Foxit MCP to create the draft folder
   const createResult = await req(`${GATEWAY}/esign/api/v1/folders/createfolder`, {
     method: "POST",
@@ -245,8 +373,8 @@ export async function createEsignFolder(
 
   const created = store.create(payload, createOpts);
 
-  // Map token → folderId for reconcile
-  tokenToFolder.set(created.planToken, folderId);
+  // Persist token → folderId in durable store (CodeRabbit finding #2)
+  tokenToFolder?.set(created.planToken, folderId);
 
   return { planToken: created.planToken, folderId };
 }
@@ -259,12 +387,8 @@ export async function createEsignFolder(
  * @param {string} planToken
  * @returns {{ok: true, planToken: string} | {ok: false, error: string, code?: string}}
  */
-export function beginEsignSend(
-  store,
-  planToken,
-) {
-  const payload = store.listPending().find((p) => p.planToken === planToken)?.payload
-    ?? store.listExecuting().find((p) => p.planToken === planToken)?.payload;
+export function beginEsignSend(store, planToken) {
+  const payload = store.listPending().find((p) => p.planToken === planToken)?.payload ?? store.listExecuting().find((p) => p.planToken === planToken)?.payload;
 
   if (!payload) {
     // Reconstruct from the best-effort journal record if available
@@ -284,10 +408,7 @@ export function beginEsignSend(
  * @param {string} planToken
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
-export async function confirmEsignExecuted(
-  store,
-  planToken,
-) {
+export async function confirmEsignExecuted(store, planToken) {
   const result = await store.confirmExecuted(planToken);
   if (!result.ok && result.error) {
     return { ok: false, error: result.error.message };
@@ -297,16 +418,31 @@ export async function confirmEsignExecuted(
 
 /**
  * Confirm the eSign send failed. Releases the plan back to retryable.
+ *
+ * CodeRabbit finding #3: Before releasing, verify the send actually failed by
+ * checking the gateway folderStatus. If the folder is SHARED, the send
+ * succeeded and we must NOT release the plan — that would allow a duplicate
+ * send on retry. If the status is unknown (null), retain the executing state
+ * for reconciliation instead of guessing.
  * @param {PlanStore<EsignPayload>} store
  * @param {string} planToken
  * @param {string} [reason]
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
-export async function confirmEsignFailed(
-  store,
-  planToken,
-  reason,
-) {
+export async function confirmEsignFailed(store, planToken, reason) {
+  const folderId = tokenToFolder?.get(planToken);
+  if (folderId) {
+    const status = await checkFolderStatus(folderId);
+    if (status === "SHARED") {
+      // The send actually succeeded — releasing would allow a duplicate send.
+      return { ok: false, error: "folder status is SHARED — send succeeded, use confirmEsignExecuted" };
+    }
+    if (status === null) {
+      // Unknown outcome — retain executing state for reconciliation.
+      return { ok: false, error: "folder status unknown — plan retained for reconciliation" };
+    }
+    // status === "DRAFT": send truly failed, safe to release.
+  }
   const result = await store.confirmFailed(planToken);
   if (!result.ok && result.error) {
     return { ok: false, error: result.error.message };
@@ -320,10 +456,7 @@ export async function confirmEsignFailed(
  * @param {string} planToken
  * @returns {Promise<{outcome: string}>}
  */
-export async function reconcileEsignPlan(
-  store,
-  planToken,
-) {
+export async function reconcileEsignPlan(store, planToken) {
   const result = await store.reconcileStuck(planToken);
   if (!result.ok && result.error) {
     return { outcome: result.error.code };
@@ -354,6 +487,9 @@ function planTokenSlice(token) {
  * Handle an incoming eSign webhook event. Deduplicates on (folderId, event_name)
  * so the same event firing twice (gateway retries) does not cause a double-
  * processing. Returns true if the event was new, false if it was a duplicate.
+ *
+ * CodeRabbit finding #1: dedup is now durable across restarts via processedEvents
+ * DurableStore.
  * @param {string} folderId
  * @param {string} eventName
  * @returns {boolean}
