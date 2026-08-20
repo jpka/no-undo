@@ -23,7 +23,7 @@
  * source — these tests do NOT call the live API.
  */
 
-import { PlanStore, FileJournal } from "../../../safe-write-mcp-core/dist/index.js";
+import { PlanStore, FileJournal } from "../../safe-write-mcp-core/dist/index.js";
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -319,7 +319,7 @@ export function createEsignStore(journalPath) {
  * journal, hydrates durable tokenToFolder and processedEvents stores, and
  * reconciles any stuck-executing plans.
  * @param {string} journalPath
- * @param {Partial<import("../../../safe-write-mcp-core/dist/index.js").PlanStoreOptions>} [options]
+ * @param {Partial<import("../../safe-write-mcp-core/dist/index.js").PlanStoreOptions>} [options]
  * @returns {Promise<PlanStore<EsignPayload>>}
  */
 export async function loadEsignStore(journalPath, options = {}) {
@@ -405,7 +405,7 @@ function preloadTokenMapFromJournal(journalPath) {
  * execute the send later.
  * @param {PlanStore<EsignPayload>} store
  * @param {EsignPayload} payload
- * @param {Partial<import("../../../safe-write-mcp-core/dist/index.js").PlanCreateOptions>} [options]
+ * @param {Partial<import("../../safe-write-mcp-core/dist/index.js").PlanCreateOptions>} [options]
  * @returns {Promise<{planToken: string, folderId: string} | {error: string, status?: number}>}
  */
 export async function createEsignFolder(store, payload, options = {}) {

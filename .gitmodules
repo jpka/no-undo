@@ -1,0 +1,3 @@
+[submodule "safe-write-mcp-core"]
+	path = safe-write-mcp-core
+	url = https://github.com/jpka/safe-write-mcp-core.git

@@ -24,7 +24,7 @@ import { z } from "zod";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import { createApprovalServer } from "../../../safe-write-mcp-core/dist/index.js";
+import { createApprovalServer } from "../../safe-write-mcp-core/dist/index.js";
 
 import {
   createEsignStore,
@@ -65,8 +65,8 @@ function getStore() {
  * Render an eSign plan for the approval UI.
  * Shows the folder name, recipient list, and an explicit irrevocability warning.
  * Does NOT dump the raw payload JSON (which would leak PII).
- * @param {import("../../../safe-write-mcp-core/dist/approvalServer.js").PendingPlan<any>} plan
- * @returns {import("../../../safe-write-mcp-core/dist/approvalServer.js").RenderablePlan}
+ * @param {import("../../safe-write-mcp-core/dist/approvalServer.js").PendingPlan<any>} plan
+ * @returns {import("../../safe-write-mcp-core/dist/approvalServer.js").RenderablePlan}
  */
 function renderEsignPlan(plan) {
   const payload = plan.payload || {};
