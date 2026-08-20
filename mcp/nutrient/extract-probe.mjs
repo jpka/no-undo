@@ -90,8 +90,8 @@ if (!wantCalibrate && !MODES.includes(singleMode)) {
   process.exit(1);
 }
 
-// Report which env var supplied the key and how long it is, never any of its
-// bytes. A nine-character prefix is enough to identify the key in a leaked log.
+// Logs the env var the key came from and its length. Never any of the key's
+// bytes: even a short prefix is enough to identify a key in a leaked log.
 console.log(`key source: ${keySource} (${apiKey.length} chars)`);
 
 // --- document ---------------------------------------------------------------

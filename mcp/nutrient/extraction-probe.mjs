@@ -55,8 +55,8 @@ if (!apiKey) {
   console.error("missing key: set NUTRIENT_API_KEY (or NUTRIENT_DWS_EXTRACTION_API_KEY) in .env");
   process.exit(1);
 }
-// Report which env var supplied the key and how long it is, never any of its
-// bytes — a prefix is enough to identify the key in a leaked log.
+// Logs the env var the key came from and its length. Never any of the key's
+// bytes: even a short prefix is enough to identify a key in a leaked log.
 console.log(`key source: ${keySource} (${apiKey.length} chars)`);
 
 const fileIdx = process.argv.indexOf("--file");

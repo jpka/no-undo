@@ -23,7 +23,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { join, dirname, basename, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
@@ -49,6 +49,16 @@ const JOURNAL_PATH =
 // the process working directory, which keeps the blast radius at the project the
 // server was started in rather than the whole filesystem.
 const DOCUMENT_ROOT = resolve(process.env.NUTRIENT_DOCUMENT_ROOT ?? process.cwd());
+// The root is canonicalized once at startup so every comparison is symlink-aware.
+// If the root itself does not exist yet, fall back to the textual form rather
+// than crashing — safePath's own check still confines to it.
+const CANONICAL_ROOT = (() => {
+  try {
+    return realpathSync(DOCUMENT_ROOT);
+  } catch {
+    return DOCUMENT_ROOT;
+  }
+})();
 const EXTRACT_URL = "https://api.nutrient.io/extraction/extract";
 const API_VERSION = "2026-05-25";
 
@@ -69,25 +79,71 @@ function getStore() {
  * "redact" `~/.ssh/id_rsa` or `.env` and it uploads the file. The write paths are
  * the mirror image — an arbitrary `outputPath` overwrites whatever it names.
  *
- * Resolution happens first so `..` segments and symlink-ish trickery collapse
- * before comparison, and the prefix check appends the separator so a sibling
- * directory sharing a name prefix (`/docs-evil` next to `/docs`) cannot pass.
+ * `resolve()` alone is not enough. It normalizes text, so `..` segments collapse,
+ * but a symlink *inside* the root pointing outside it produces a resolved path
+ * that passes the prefix check and still reads or writes the target (CWE-59).
+ * Verified: a root-relative `innocent.txt -> /tmp/outside.txt` reads the outside
+ * file under a text-only check. So both sides are canonicalized with
+ * `realpathSync` before comparison.
+ *
+ * The candidate may not exist yet — that is normal for an output path — so the
+ * walk canonicalizes the deepest ancestor that does exist and re-appends the
+ * remaining segments. A non-existent leaf cannot itself be a symlink, but any of
+ * its parents can be, which is the case that matters.
+ *
+ * The prefix check appends the separator so a sibling directory sharing a name
+ * prefix (`/docs-evil` next to `/docs`) cannot pass.
  * @param {string} candidate
  * @param {string} label  which parameter this is, for the error message
- * @returns {string} the confined absolute path
+ * @returns {string} the confined, canonicalized absolute path
  */
 function safePath(candidate, label) {
   if (typeof candidate !== "string" || candidate.length === 0) {
     throw new Error(`[nutrient-mcp-server] ${label} must be a non-empty path`);
   }
   const resolved = resolve(DOCUMENT_ROOT, candidate);
-  if (resolved !== DOCUMENT_ROOT && !resolved.startsWith(DOCUMENT_ROOT + sep)) {
+
+  // Canonicalize the deepest existing ancestor, keeping the not-yet-created tail.
+  let existing = resolved;
+  const tail = [];
+  for (;;) {
+    try {
+      existing = realpathSync(existing);
+      break;
+    } catch {
+      const parent = dirname(existing);
+      if (parent === existing) break; // hit the filesystem root
+      tail.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+  const canonical = tail.length ? join(existing, ...tail) : existing;
+
+  if (canonical !== CANONICAL_ROOT && !canonical.startsWith(CANONICAL_ROOT + sep)) {
     throw new Error(
       `[nutrient-mcp-server] ${label} resolves outside the document root ` +
-        `(${DOCUMENT_ROOT}). Set NUTRIENT_DOCUMENT_ROOT to widen it deliberately.`,
+        `(${CANONICAL_ROOT}). Set NUTRIENT_DOCUMENT_ROOT to widen it deliberately.`,
     );
   }
-  return resolved;
+  return canonical;
+}
+
+/**
+ * Refuse a write that would clobber its own source.
+ *
+ * `outputPath` defaulting or being passed equal to the input means the staged or
+ * redacted result overwrites the original, and for the apply step the original is
+ * the last intact copy of the unredacted document. Fail before the write.
+ * @param {string} src
+ * @param {string} dest
+ */
+function assertDistinct(src, dest) {
+  if (src === dest) {
+    throw new Error(
+      "[nutrient-mcp-server] outputPath is the same file as the input " +
+        `(${dest}); refusing to overwrite the source document`,
+    );
+  }
 }
 
 /**
@@ -141,7 +197,7 @@ export function pruneStagedCache(now = Date.now()) {
   }
 }
 
-export { safePath, DOCUMENT_ROOT };
+export { safePath, DOCUMENT_ROOT, CANONICAL_ROOT, assertDistinct };
 
 /**
  * Test seam for the cache bounds. Not used by the server itself — exported so
@@ -195,6 +251,7 @@ server.registerTool(
     guarded(async () => {
       const src = safePath(filePath, "filePath");
       const dest = safePath(outputPath ?? `${filePath}.staged.pdf`, "outputPath");
+      assertDistinct(src, dest);
       const bytes = new Uint8Array(readFileSync(src));
       const result = await stageRedactions(bytes, targets, { fileName: basename(src) });
       if (!result.ok) {
@@ -322,6 +379,7 @@ server.registerTool(
       // or out-of-root path should fail while the document is still intact, not
       // after the content has been destroyed.
       const dest = safePath(outputPath ?? `${cached.stagedPath}.redacted.pdf`, "outputPath");
+      assertDistinct(cached.stagedPath, dest);
 
       const digest = operationDigest(cached.bytes, cached.targets);
       const payload = {
@@ -392,7 +450,39 @@ server.registerTool(
         };
       }
 
-      writeFileSync(dest, applied.bytes);
+      // The remote destructive call has already landed. The redacted bytes exist
+      // only in memory, so a throw here would discard the sole copy of the result
+      // of an irreversible operation and leave the plan stuck with no explanation.
+      // Catch it and report precisely what is true: the content was destroyed
+      // upstream, and the output was not persisted.
+      try {
+        writeFileSync(dest, applied.bytes);
+      } catch (err) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  planToken,
+                  status: "executing",
+                  applied: true,
+                  outputPersisted: false,
+                  error: `redactions were applied upstream but writing ${dest} failed: ${String(err?.message ?? err)}`,
+                  note:
+                    "The destructive call already happened, so this is NOT retryable — " +
+                    "re-running would redact an already-redacted document under a new plan. " +
+                    "The redacted output is lost and must be regenerated from the source. " +
+                    "The plan is left executing; resolve it by hand.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
 
       // The content is gone at this point, so a failed confirmation is a
       // bookkeeping problem, not a reason to claim the apply did not happen. Say

@@ -12,9 +12,16 @@
 
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { join, sep } from "node:path";
+import { join, sep, basename } from "node:path";
+import { mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
-import { __stagedCacheForTest, safePath, DOCUMENT_ROOT } from "../mcp/nutrient/nutrient-mcp-server.mjs";
+import {
+  __stagedCacheForTest,
+  safePath,
+  CANONICAL_ROOT,
+  assertDistinct,
+} from "../mcp/nutrient/nutrient-mcp-server.mjs";
 
 const { map, max, ttlMs, prune } = __stagedCacheForTest;
 
@@ -86,11 +93,11 @@ describe("staged document cache bounds", () => {
 describe("safePath", () => {
   test("accepts a path inside the document root", () => {
     const p = safePath("docs/invoice.pdf", "filePath");
-    assert.ok(p.startsWith(DOCUMENT_ROOT + sep));
+    assert.ok(p.startsWith(CANONICAL_ROOT + sep));
   });
 
   test("resolves a relative path against the root rather than the cwd", () => {
-    assert.equal(safePath("a/b.pdf", "filePath"), join(DOCUMENT_ROOT, "a", "b.pdf"));
+    assert.equal(safePath("a/b.pdf", "filePath"), join(CANONICAL_ROOT, "a", "b.pdf"));
   });
 
   for (const traversal of [
@@ -109,7 +116,7 @@ describe("safePath", () => {
   test("rejects a sibling directory that merely shares a name prefix", () => {
     // The check appends the separator for exactly this case — a plain startsWith
     // would let /root-evil pass next to /root.
-    const sibling = DOCUMENT_ROOT + "-evil/doc.pdf";
+    const sibling = CANONICAL_ROOT + "-evil/doc.pdf";
     assert.throws(() => safePath(sibling, "filePath"), /outside the document root/);
   });
 
@@ -119,6 +126,72 @@ describe("safePath", () => {
   });
 
   test("the root itself is allowed", () => {
-    assert.equal(safePath(DOCUMENT_ROOT, "filePath"), DOCUMENT_ROOT);
+    assert.equal(safePath(CANONICAL_ROOT, "filePath"), CANONICAL_ROOT);
+  });
+
+  test("rejects an in-root symlink pointing outside the root", () => {
+    // resolve() only normalizes text, so a symlink inside the root produces a
+    // resolved path that passes a prefix check and still reads the target
+    // (CWE-59). Verified by hand before the fix: a root-relative link to
+    // /tmp/outside.txt read the outside file. Canonicalization is what closes it.
+    const dir = mkdtempSync(join(tmpdir(), "no-undo-symlink-"));
+    const outside = join(dir, "outside.txt");
+    const link = join(CANONICAL_ROOT, `sym-escape-${process.pid}.txt`);
+    try {
+      writeFileSync(outside, "SECRET OUTSIDE ROOT");
+      symlinkSync(outside, link);
+      assert.throws(() => safePath(basename(link), "filePath"), /outside the document root/);
+    } finally {
+      try {
+        unlinkSync(link);
+      } catch {
+        /* ignore */
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a path whose parent directory is an escaping symlink", () => {
+    // The leaf need not exist — that is normal for an output path — but a symlinked
+    // ancestor is exactly the case the deepest-existing-ancestor walk exists for.
+    const dir = mkdtempSync(join(tmpdir(), "no-undo-symdir-"));
+    const link = join(CANONICAL_ROOT, `sym-dir-${process.pid}`);
+    try {
+      symlinkSync(dir, link);
+      assert.throws(
+        () => safePath(join(basename(link), "not-created-yet.pdf"), "outputPath"),
+        /outside the document root/,
+      );
+    } finally {
+      try {
+        unlinkSync(link);
+      } catch {
+        /* ignore */
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a non-existent in-root output path is still accepted", () => {
+    // Canonicalization must not reject paths that simply do not exist yet.
+    const p = safePath("does/not/exist/out.pdf", "outputPath");
+    assert.ok(p.startsWith(CANONICAL_ROOT + sep));
+  });
+});
+
+// --- Clobber guard -----------------------------------------------------------
+
+describe("assertDistinct", () => {
+  test("refuses a write whose destination is its own source", () => {
+    // On the apply path the source is the last intact copy of the unredacted
+    // document, so overwriting it in place loses the original entirely.
+    assert.throws(
+      () => assertDistinct("/root/doc.pdf", "/root/doc.pdf"),
+      /refusing to overwrite the source/,
+    );
+  });
+
+  test("allows distinct paths", () => {
+    assert.doesNotThrow(() => assertDistinct("/root/doc.pdf", "/root/doc.staged.pdf"));
   });
 });
