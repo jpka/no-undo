@@ -162,8 +162,18 @@ class DurableStore {
 
   /** @param {string} key @param {unknown} value */
   set(key, value) {
+    const hadValue = this.data.has(key);
+    const previousValue = this.data.get(key);
     this.data.set(key, value);
-    this.save();
+    try {
+      this.save();
+    } catch (err) {
+      // Roll back the in-memory mutation on persistence failure so the
+      // durable state and in-memory state stay consistent.
+      if (hadValue) this.data.set(key, previousValue);
+      else this.data.delete(key);
+      throw err;
+    }
   }
 
   /** @param {string} key */
@@ -173,8 +183,16 @@ class DurableStore {
 
   /** @param {string} key */
   delete(key) {
+    const previousValue = this.data.get(key);
+    const hadValue = this.data.has(key);
     const result = this.data.delete(key);
-    this.save();
+    try {
+      this.save();
+    } catch (err) {
+      // Roll back the in-memory mutation on persistence failure.
+      if (hadValue) this.data.set(key, previousValue);
+      throw err;
+    }
     return result;
   }
 }
@@ -305,6 +323,11 @@ export function createEsignStore(journalPath) {
  */
 export async function loadEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
+  // Preload tokenToFolder from the journal's stored extra.folderId before
+  // reconciliation. If .token-map.json was lost, the journal is the
+  // authoritative source — without this, fromJournal()'s reconcile callback
+  // returns "unknown" for every recovered plan.
+  preloadTokenMapFromJournal(journalPath);
   // fromJournal is a static factory: it replays the journal, loads recovered
   // executing plans into a new store, reconciles them, and returns it.
   const store = await PlanStore.fromJournal(journalPath, {
@@ -337,6 +360,33 @@ export async function loadEsignStore(journalPath, options = {}) {
     }
   }
   return store;
+}
+
+/**
+ * Preload tokenToFolder from journal records' extra.folderId. The journal stores
+ * the full PlanMeta (including extra) on every transition, so even if
+ * .token-map.json was deleted, we can rebuild the mapping for reconciliation.
+ * @param {string} journalPath
+ */
+function preloadTokenMapFromJournal(journalPath) {
+  if (!tokenToFolder) return;
+  try {
+    const raw = readFileSync(journalPath, "utf8");
+    const lines = raw.split("\n").filter((l) => l.trim());
+    for (const line of lines) {
+      try {
+        const rec = JSON.parse(line);
+        const folderId = rec.extra?.folderId;
+        if (folderId && rec.planToken && !tokenToFolder.has(rec.planToken)) {
+          tokenToFolder.set(rec.planToken, folderId);
+        }
+      } catch {
+        // skip malformed lines
+      }
+    }
+  } catch {
+    // journal missing or unreadable — reconcile will return "unknown"
+  }
 }
 
 // --- Public adapter API ------------------------------------------------------
