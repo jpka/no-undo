@@ -1,8 +1,13 @@
 # Nutrient stage — extraction routing and staged redaction (Aug 20, 2026)
 
 Implements the build plan's Aug 26–28 item, six days early, unblocked by the
-Data Extraction key landing in `.env`. Everything below was verified against the
-live API; the transcripts are committed in `docs/fixtures/`.
+Data Extraction key landing in `.env`.
+
+**What was live-verified, precisely:** the extraction observations below (all
+three findings, across all three modes) and the stage-then-apply redaction path
+with a literal `text` target. The committed transcripts are in `docs/fixtures/`.
+**Not yet verified:** the built-in PII preset identifiers — the flow they run
+through is proven, the preset names are still assumed. See "Still open".
 
 ## What shipped
 
@@ -113,7 +118,12 @@ documents set it false, because with no OCR stage there is nothing to misread.
 5. Grounded but no composite score → human. **Absent is not low**: scoring it 0
    would refer everything, scoring it 1 would approve blindly.
 6. `confidence` below the per-type threshold → human.
-7. `groundingScore` below the floor → human (value looks inferred, not read).
+7. `groundingScore` **present** and below the floor → human (value looks inferred,
+   not read). Absent, it passes through — unlike `recognitionScore` in step 9.
+   The asymmetry is deliberate: the match label already carries a grounding
+   verdict (`id_match` means it resolved to a source block), so an absent
+   component score is redundant rather than a blind spot. There is no equivalent
+   label for OCR quality, which is why absence there is treated as a gap.
 8. `recognitionScore` present and below the floor → human (OCR may have misread).
 9. `recognitionScore` absent and the type requires it → human.
 

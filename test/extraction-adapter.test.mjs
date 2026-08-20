@@ -192,6 +192,24 @@ describe("routeField: component vetoes", () => {
     assert.equal(thresholdsFor("born_digital").requireRecognition, false);
     assert.equal(routeOne(c, "x", { documentType: "born_digital" }).route, "auto");
   });
+
+  test("an absent groundingScore passes through, unlike an absent recognitionScore", () => {
+    // The asymmetry, pinned. The match label already reports a grounding verdict,
+    // so a missing grounding component is redundant; nothing reports OCR quality,
+    // so a missing recognition score is a genuine blind spot.
+    const noGrounding = passingCitation({ confidenceComponents: { source: "logprobs-only" } });
+    assert.equal(routeOne(noGrounding).route, "auto", "absent grounding does not veto");
+
+    const noRecognition = passingCitation();
+    delete noRecognition.recognitionScore;
+    assert.equal(routeOne(noRecognition).route, "human", "absent recognition does veto");
+  });
+
+  test("confidenceComponents missing entirely still auto-approves on a good label", () => {
+    const c = passingCitation();
+    delete c.confidenceComponents;
+    assert.equal(routeOne(c).route, "auto");
+  });
 });
 
 // --- The union walk ----------------------------------------------------------
@@ -364,7 +382,11 @@ describe("committed live fixtures", () => {
     assert.equal(summary.auto, 0, "with no OCR signal, no invoice field may auto-approve");
   });
 
-  test("every mode found both not_found fields", () => {
+  test("understand and agentic both surface the two not_found fields", () => {
+    // Named for the two modes it actually checks. structure mode is excluded on
+    // purpose: it produced no citation for either field, so there is nothing to
+    // assert about its not_found handling — which is itself the finding that
+    // structure is unsuitable for schema extraction.
     for (const mode of ["understand", "agentic"]) {
       const { output } = fixture(mode);
       const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
@@ -375,5 +397,15 @@ describe("committed live fixtures", () => {
         assert.equal(f.route, "human");
       }
     }
+  });
+
+  test("structure mode refers everything, including fields it never scored", () => {
+    // The safe failure: a mode that produces little usable signal must not
+    // produce many auto-approvals.
+    const { output } = fixture("structure");
+    const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
+    const summary = summarizeRouting(routed);
+    assert.equal(summary.auto, 0, "structure mode must not auto-approve on this document");
+    assert.ok(summary.total > 0, "the walk still finds fields to report");
   });
 });

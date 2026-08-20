@@ -30,11 +30,18 @@ export function messyPdf() {
   const push = (s) => content.push(s);
 
   // A freehand-style "signature" as a long polyline, in red ink.
+  //
+  // Each segment is wrapped in q/Q with no `cm`, so coordinates are absolute.
+  // An earlier version emitted `q 1 0 0 1 ${x} ${y} m ...`, which looks like a
+  // translation matrix but has no `cm` operator after it — `m` consumed the last
+  // two numbers and `1 0 0 1` were left as stray operands. Readers tolerated it
+  // and the geometry came out identical, but a malformed content stream is a trap
+  // for the next person, so the stray operands are gone.
   let sig = "0.8 0.1 0.1 RG 1.5 w\n";
   let x = 320;
   let y = 150;
   for (let i = 0; i < 24; i++) {
-    sig += `q 1 0 0 1 ${x} ${y} m ${x + 5} ${y + (i % 2 ? -4 : 4)} l ${x + 9} ${y - 2} l ${x + 13} ${y + (i % 2 ? 5 : -5)} l S Q\n`;
+    sig += `q ${x} ${y} m ${x + 5} ${y + (i % 2 ? -4 : 4)} l ${x + 9} ${y - 2} l ${x + 13} ${y + (i % 2 ? 5 : -5)} l S Q\n`;
     x += 13;
     y += (i % 3 === 0 ? 3 : -2);
   }

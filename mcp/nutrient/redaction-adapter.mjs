@@ -162,19 +162,30 @@ function createRedactionActions(targets) {
 }
 
 /**
- * Describe a target for the approval UI without echoing anything it matched.
+ * Describe a target for the approval UI without echoing anything sensitive.
  *
- * The literal `text` strategy is the one case where the target itself is the
- * sensitive value — redacting a named person means the name is the search term.
- * So a text target is described by shape and length, never by content. A preset
- * or regex is a category, which is safe to name and is what the reviewer
- * actually needs to see.
+ * A literal `text` target IS the sensitive value — redacting a named person means
+ * the name is the search term — so it is described by shape and length only.
+ *
+ * A regex needs the same treatment for the same reason: `/Kaniefsky|555-01-0042/`
+ * is a pattern that embeds exactly the values being hidden. Printing it in full
+ * would put them on the review screen. So only the pattern's structure is
+ * reported: length, and whether it contains literal word or digit runs long
+ * enough to be a value rather than a character class. A preset is a category name
+ * with no document content in it, which is safe to show and is what the reviewer
+ * actually needs.
  * @param {RedactionTarget} t
  * @returns {string}
  */
 export function describeTarget(t) {
   if (t.strategy === "preset") return `preset: ${t.preset}`;
-  if (t.strategy === "regex") return `regex: ${t.regex}`;
+  if (t.strategy === "regex") {
+    const pattern = typeof t.regex === "string" ? t.regex : "";
+    // Literal runs are the part that could be a value rather than a matcher.
+    const hasLiterals = /[A-Za-z0-9]{4,}/.test(pattern);
+    const shape = hasLiterals ? "contains literal runs" : "character classes only";
+    return `regex (${pattern.length} chars, ${shape}) — pattern withheld from this view`;
+  }
   const len = typeof t.text === "string" ? t.text.length : 0;
   const sensitivity = t.caseSensitive ? "case-sensitive" : "case-insensitive";
   return `literal text (${len} chars, ${sensitivity}) — value withheld from this view`;
@@ -377,10 +388,15 @@ export function createRedactionPlan(store, payload, options = {}) {
     reason: options.reason ?? "Agent proposed applying staged redactions",
     callerId: options.callerId ?? "agent",
     previewCount: payload.stagedCount ?? payload.targets.length,
-    dataDigest: payload.digest,
     extra: { documentName: payload.documentName, digest: payload.digest },
-    alwaysRequireApproval: true,
+    // Caller options are spread BEFORE the two security-critical fields, not
+    // after. With the spread last, `options.alwaysRequireApproval = false` would
+    // silently disable the human gate on an irreversible action, and
+    // `options.dataDigest` could replace the binding to the staged document with
+    // anything at all. These two are not the caller's to override.
     ...options,
+    dataDigest: payload.digest,
+    alwaysRequireApproval: true,
   });
   return { planToken: created.planToken };
 }
@@ -434,7 +450,12 @@ export function beginRedactionApply(store, planToken, payload, currentDigest) {
  */
 export async function confirmRedactionExecuted(store, planToken) {
   const result = await store.confirmExecuted(planToken);
-  if (!result.ok && result.error) return { ok: false, error: result.error.message };
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error?.message ?? "confirmExecuted failed without reporting a reason",
+    };
+  }
   return { ok: true };
 }
 
@@ -453,7 +474,12 @@ export async function confirmRedactionExecuted(store, planToken) {
  */
 export async function confirmRedactionFailed(store, planToken, reason) {
   const result = await store.confirmFailed(planToken, reason);
-  if (!result.ok && result.error) return { ok: false, error: result.error.message };
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error?.message ?? "confirmFailed failed without reporting a reason",
+    };
+  }
   return { ok: true };
 }
 

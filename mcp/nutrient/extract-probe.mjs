@@ -90,7 +90,9 @@ if (!wantCalibrate && !MODES.includes(singleMode)) {
   process.exit(1);
 }
 
-console.log(`key source: ${keySource} (prefix ${apiKey.slice(0, 9)}...)`);
+// Report which env var supplied the key and how long it is, never any of its
+// bytes. A nine-character prefix is enough to identify the key in a leaked log.
+console.log(`key source: ${keySource} (${apiKey.length} chars)`);
 
 // --- document ---------------------------------------------------------------
 

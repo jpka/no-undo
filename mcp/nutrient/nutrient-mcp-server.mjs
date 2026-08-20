@@ -24,8 +24,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, dirname, basename, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
 
 import { routeFields, summarizeRouting, INVOICE_SCHEMA } from "./extraction-adapter.mjs";
@@ -45,6 +45,10 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const JOURNAL_PATH =
   process.env.NUTRIENT_JOURNAL_PATH ?? join(__dirname, ".redaction-journal.jsonl");
+// Every document path the agent supplies is confined under this root. Defaults to
+// the process working directory, which keeps the blast radius at the project the
+// server was started in rather than the whole filesystem.
+const DOCUMENT_ROOT = resolve(process.env.NUTRIENT_DOCUMENT_ROOT ?? process.cwd());
 const EXTRACT_URL = "https://api.nutrient.io/extraction/extract";
 const API_VERSION = "2026-05-25";
 
@@ -57,12 +61,98 @@ function getStore() {
 }
 
 /**
+ * Confine a document path to the configured document root.
+ *
+ * Every path in this server arrives from the agent, and two of the tools hand
+ * that path straight to `readFileSync` before uploading the bytes to Nutrient. An
+ * unconfined path is therefore an exfiltration primitive: ask the server to
+ * "redact" `~/.ssh/id_rsa` or `.env` and it uploads the file. The write paths are
+ * the mirror image — an arbitrary `outputPath` overwrites whatever it names.
+ *
+ * Resolution happens first so `..` segments and symlink-ish trickery collapse
+ * before comparison, and the prefix check appends the separator so a sibling
+ * directory sharing a name prefix (`/docs-evil` next to `/docs`) cannot pass.
+ * @param {string} candidate
+ * @param {string} label  which parameter this is, for the error message
+ * @returns {string} the confined absolute path
+ */
+function safePath(candidate, label) {
+  if (typeof candidate !== "string" || candidate.length === 0) {
+    throw new Error(`[nutrient-mcp-server] ${label} must be a non-empty path`);
+  }
+  const resolved = resolve(DOCUMENT_ROOT, candidate);
+  if (resolved !== DOCUMENT_ROOT && !resolved.startsWith(DOCUMENT_ROOT + sep)) {
+    throw new Error(
+      `[nutrient-mcp-server] ${label} resolves outside the document root ` +
+        `(${DOCUMENT_ROOT}). Set NUTRIENT_DOCUMENT_ROOT to widen it deliberately.`,
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Run a tool body, turning a thrown error into an MCP error result.
+ *
+ * Handlers must not throw: a rejected path, an unreadable file, or an unwritable
+ * destination should come back as a message the agent can act on rather than a
+ * transport-level failure.
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T | {isError: true, content: Array<{type: "text", text: string}>}>}
+ */
+async function guarded(fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    return {
+      isError: true,
+      content: [{ type: "text", text: String(err?.message ?? err) }],
+    };
+  }
+}
+
+/**
  * Staged documents, keyed by plan token, so the apply step can re-read the exact
  * bytes the human approved. Lost on restart by design: after a crash the
  * document must be re-staged rather than applied from a half-known state.
- * @type {Map<string, {bytes: Uint8Array, targets: any[], fileName: string}>}
+ *
+ * Bounded, because the entries hold whole documents — the very documents that
+ * still contain the PII the redaction is meant to remove. A plan the human never
+ * approves would otherwise pin that content in memory for the life of the
+ * process. Entries are evicted on apply, when the plan's TTL passes, and oldest-
+ * first if the cap is reached.
+ * @type {Map<string, {bytes: Uint8Array, targets: any[], fileName: string, stagedPath: string, stagedAt: number}>}
  */
 const stagedCache = new Map();
+const STAGED_CACHE_MAX = 32;
+// Matches the store's planTtlMs: once a plan can no longer execute, holding its
+// document buys nothing and costs exposure.
+const STAGED_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Drop expired entries, then oldest-first while over the cap. */
+export function pruneStagedCache(now = Date.now()) {
+  for (const [token, entry] of stagedCache) {
+    if (now - entry.stagedAt > STAGED_CACHE_TTL_MS) stagedCache.delete(token);
+  }
+  // Map iterates in insertion order, so the first key is the oldest.
+  while (stagedCache.size > STAGED_CACHE_MAX) {
+    const oldest = stagedCache.keys().next().value;
+    stagedCache.delete(oldest);
+  }
+}
+
+export { safePath, DOCUMENT_ROOT };
+
+/**
+ * Test seam for the cache bounds. Not used by the server itself — exported so
+ * the eviction policy can be exercised without booting a stdio transport.
+ */
+export const __stagedCacheForTest = {
+  map: stagedCache,
+  max: STAGED_CACHE_MAX,
+  ttlMs: STAGED_CACHE_TTL_MS,
+  prune: pruneStagedCache,
+};
 
 const server = new McpServer({
   name: "no-undo-nutrient",
@@ -101,34 +191,39 @@ server.registerTool(
       outputPath: z.string().optional().describe("Where to write the staged document"),
     },
   },
-  async ({ filePath, targets, outputPath }) => {
-    const bytes = new Uint8Array(readFileSync(filePath));
-    const result = await stageRedactions(bytes, targets, { fileName: basename(filePath) });
-    if (!result.ok) {
-      return { isError: true, content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-    }
-    const staged = outputPath ?? `${filePath}.staged.pdf`;
-    writeFileSync(staged, result.bytes);
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              stagedPath: staged,
-              digest: result.digest,
-              staged: result.staged,
-              warning:
-                "Content under each mark is still recoverable from this file. " +
-                "Call nutrient_plan_redaction, get human approval, then apply.",
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
-  },
+  async ({ filePath, targets, outputPath }) =>
+    guarded(async () => {
+      const src = safePath(filePath, "filePath");
+      const dest = safePath(outputPath ?? `${filePath}.staged.pdf`, "outputPath");
+      const bytes = new Uint8Array(readFileSync(src));
+      const result = await stageRedactions(bytes, targets, { fileName: basename(src) });
+      if (!result.ok) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      writeFileSync(dest, result.bytes);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                stagedPath: dest,
+                digest: result.digest,
+                staged: result.staged,
+                warning:
+                  "Content under each mark is still recoverable from this file. " +
+                  "Call nutrient_plan_redaction, get human approval, then apply.",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }),
 );
 
 // --- Redaction: plan the apply ----------------------------------------------
@@ -148,33 +243,44 @@ server.registerTool(
       reason: z.string().optional().describe("Why the agent wants this applied"),
     },
   },
-  async ({ stagedPath, targets, documentName, reason }) => {
-    const bytes = new Uint8Array(readFileSync(stagedPath));
-    // Digest the bytes on disk right now rather than trusting a value passed in:
-    // the plan must be bound to the document that will actually be redacted.
-    const digest = operationDigest(bytes, targets);
-    const payload = { documentName, digest, targets, stagedCount: targets.length };
-    const { planToken } = createRedactionPlan(getStore(), payload, { reason });
-    stagedCache.set(planToken, { bytes, targets, fileName: basename(stagedPath) });
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              planToken,
-              status: "awaiting_approval",
-              digest,
-              message:
-                "Open the approval UI to approve or reject. Applying destroys content permanently.",
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
-  },
+  async ({ stagedPath, targets, documentName, reason }) =>
+    guarded(async () => {
+      const src = safePath(stagedPath, "stagedPath");
+      const bytes = new Uint8Array(readFileSync(src));
+      // Digest the bytes on disk right now rather than trusting a value passed in:
+      // the plan must be bound to the document that will actually be redacted.
+      const digest = operationDigest(bytes, targets);
+      const payload = { documentName, digest, targets, stagedCount: targets.length };
+      const { planToken } = createRedactionPlan(getStore(), payload, { reason });
+      // Store the confined path so the apply step derives its output from a path
+      // that has already been validated, never from raw agent input.
+      stagedCache.set(planToken, {
+        bytes,
+        targets,
+        fileName: basename(src),
+        stagedPath: src,
+        stagedAt: Date.now(),
+      });
+      pruneStagedCache();
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                planToken,
+                status: "awaiting_approval",
+                digest,
+                message:
+                  "Open the approval UI to approve or reject. Applying destroys content permanently.",
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }),
 );
 
 // --- Redaction: apply (irreversible, gated) ---------------------------------
@@ -192,45 +298,80 @@ server.registerTool(
       outputPath: z.string().optional().describe("Where to write the redacted document"),
     },
   },
-  async ({ planToken, outputPath }) => {
-    const cached = stagedCache.get(planToken);
-    if (!cached) {
-      return {
-        isError: true,
-        content: [
-          {
-            type: "text",
-            text:
-              "no staged document for this plan token — re-stage and re-plan " +
-              "(this state is deliberately not kept across restarts)",
-          },
-        ],
+  async ({ planToken, outputPath }) =>
+    guarded(async () => {
+      pruneStagedCache();
+      const cached = stagedCache.get(planToken);
+      if (!cached) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text:
+                "no staged document for this plan token. Either it was never staged, or the " +
+                "entry aged out — staged documents still contain the unredacted content, so " +
+                "they are held only as long as the plan can execute. Re-stage and re-plan. " +
+                "(This state is deliberately not persisted across restarts either.)",
+            },
+          ],
+        };
+      }
+
+      // Resolve the destination before doing anything irreversible: an unwritable
+      // or out-of-root path should fail while the document is still intact, not
+      // after the content has been destroyed.
+      const dest = safePath(outputPath ?? `${cached.stagedPath}.redacted.pdf`, "outputPath");
+
+      const digest = operationDigest(cached.bytes, cached.targets);
+      const payload = {
+        documentName: cached.fileName,
+        digest,
+        targets: cached.targets,
+        stagedCount: cached.targets.length,
       };
-    }
 
-    const digest = operationDigest(cached.bytes, cached.targets);
-    const payload = {
-      documentName: cached.fileName,
-      digest,
-      targets: cached.targets,
-      stagedCount: cached.targets.length,
-    };
+      const begun = beginRedactionApply(getStore(), planToken, payload, digest);
+      if (!begun.ok) {
+        return { isError: true, content: [{ type: "text", text: JSON.stringify(begun, null, 2) }] };
+      }
 
-    const begun = beginRedactionApply(getStore(), planToken, payload, digest);
-    if (!begun.ok) {
-      return { isError: true, content: [{ type: "text", text: JSON.stringify(begun, null, 2) }] };
-    }
+      const applied = await applyRedactions(cached.bytes, cached.targets, {
+        fileName: cached.fileName,
+      });
 
-    const applied = await applyRedactions(cached.bytes, cached.targets, {
-      fileName: cached.fileName,
-    });
-
-    if (!applied.ok) {
-      // A rejection means the destructive call did not happen, so releasing the
-      // plan is safe. A transport error is ambiguous — the request may have been
-      // processed before the connection broke — so the plan stays executing and
-      // a human decides. Guessing here is how a double apply happens.
-      if (applied.transportError) {
+      if (!applied.ok) {
+        // A rejection means the destructive call did not happen, so releasing the
+        // plan is safe. A transport error is ambiguous — the request may have been
+        // processed before the connection broke — so the plan stays executing and
+        // a human decides. Guessing here is how a double apply happens.
+        if (applied.transportError) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(
+                  {
+                    error: applied.error,
+                    planToken,
+                    status: "executing",
+                    note:
+                      "Transport failed mid-request, so whether the apply landed is unknown. " +
+                      "The plan is left executing; /build cannot be reconciled, so inspect the " +
+                      "document and call nutrient_confirm_failed only if certain nothing applied.",
+                  },
+                  null,
+                  2,
+                ),
+              },
+            ],
+          };
+        }
+        // Report the state the plan is actually in. If the release itself failed
+        // the plan is still executing, and telling the agent "retryable" would
+        // send it into a retry that beginRedactionApply then refuses.
+        const released = await confirmRedactionFailed(getStore(), planToken, applied.error);
         return {
           isError: true,
           content: [
@@ -240,11 +381,8 @@ server.registerTool(
                 {
                   error: applied.error,
                   planToken,
-                  status: "executing",
-                  note:
-                    "Transport failed mid-request, so whether the apply landed is unknown. " +
-                    "The plan is left executing; /build cannot be reconciled, so inspect the " +
-                    "document and call nutrient_confirm_failed only if certain nothing applied.",
+                  status: released.ok ? "retryable" : "executing",
+                  releaseError: released.ok ? undefined : released.error,
                 },
                 null,
                 2,
@@ -253,32 +391,37 @@ server.registerTool(
           ],
         };
       }
-      await confirmRedactionFailed(getStore(), planToken, applied.error);
+
+      writeFileSync(dest, applied.bytes);
+
+      // The content is gone at this point, so a failed confirmation is a
+      // bookkeeping problem, not a reason to claim the apply did not happen. Say
+      // both things: the document was redacted, and the audit record is incomplete.
+      const confirmed = await confirmRedactionExecuted(getStore(), planToken);
+      stagedCache.delete(planToken);
+
       return {
-        isError: true,
+        isError: !confirmed.ok,
         content: [
           {
             type: "text",
-            text: JSON.stringify({ error: applied.error, planToken, status: "retryable" }, null, 2),
+            text: JSON.stringify(
+              {
+                planToken,
+                status: "executed",
+                outputPath: dest,
+                auditWarning: confirmed.ok
+                  ? undefined
+                  : `redactions were applied but the plan could not be confirmed: ${confirmed.error}. ` +
+                    "The plan may still show as executing; resolve it before trusting the audit log.",
+              },
+              null,
+              2,
+            ),
           },
         ],
       };
-    }
-
-    const out = outputPath ?? `${cached.fileName}.redacted.pdf`;
-    writeFileSync(out, applied.bytes);
-    await confirmRedactionExecuted(getStore(), planToken);
-    stagedCache.delete(planToken);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({ planToken, status: "executed", outputPath: out }, null, 2),
-        },
-      ],
-    };
-  },
+    }),
 );
 
 // --- Recovery ---------------------------------------------------------------
@@ -360,85 +503,122 @@ server.registerTool(
         .describe("Threshold set to apply (invoice, born_digital, or DEFAULT)"),
     },
   },
-  async ({ filePath, mode, documentType }) => {
-    const key = process.env.NUTRIENT_DWS_EXTRACTION_API_KEY;
-    if (!key) {
+  async ({ filePath, mode, documentType }) =>
+    guarded(async () => {
+      const key = process.env.NUTRIENT_DWS_EXTRACTION_API_KEY;
+      if (!key) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "missing NUTRIENT_DWS_EXTRACTION_API_KEY (Data Extraction is a separate product from the Processor key)",
+            },
+          ],
+        };
+      }
+
+      // Confined before the read: this path's bytes get uploaded to a third party,
+      // so an unrestricted path here would be an exfiltration primitive.
+      const src = safePath(filePath, "filePath");
+
+      const body = new FormData();
+      body.append("file", new Blob([readFileSync(src)]), basename(src));
+      body.append(
+        "instructions",
+        JSON.stringify({
+          schema: INVOICE_SCHEMA,
+          parseConfig: { mode },
+          options: { includeCitations: true, strict: false, multimodal: false },
+        }),
+      );
+
+      let res;
+      try {
+        res = await fetch(EXTRACT_URL, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "x-nutrient-api-version": API_VERSION },
+          body,
+          signal: AbortSignal.timeout(180_000),
+          redirect: "error",
+        });
+      } catch (err) {
+        return { isError: true, content: [{ type: "text", text: `network: ${String(err)}` }] };
+      }
+      const raw = await res.text();
+      if (!res.ok) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: `HTTP ${res.status}: ${raw.slice(0, 400)}` }],
+        };
+      }
+
+      // A 200 with a body that is not JSON, or is JSON without an `output`, must
+      // not reach the router: routeFields on {} reports zero fields, which reads
+      // as "nothing needed review" — the most dangerous possible way to fail.
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `extraction returned HTTP 200 with a non-JSON body: ${raw.slice(0, 200)}`,
+            },
+          ],
+        };
+      }
+      if (!parsed?.output || typeof parsed.output !== "object") {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "extraction response has no `output` object; refusing to report an empty routing result as success",
+            },
+          ],
+        };
+      }
+
+      const output = parsed.output;
+      const routed = routeFields(output.data ?? {}, output.metadata ?? {}, { documentType });
+      const summary = summarizeRouting(routed);
+
       return {
-        isError: true,
         content: [
           {
             type: "text",
-            text: "missing NUTRIENT_DWS_EXTRACTION_API_KEY (Data Extraction is a separate product from the Processor key)",
+            text: JSON.stringify(
+              {
+                mode,
+                thresholds: routed.limits,
+                summary: {
+                  total: summary.total,
+                  auto: summary.auto,
+                  needsReview: summary.human,
+                  byMatch: summary.byMatch,
+                  vetoedByOcrFloor: summary.savedByRecognition,
+                },
+                fields: routed.fields.map((f) => ({
+                  field: f.field,
+                  value: f.valuePresent ? f.value : null,
+                  valuePresent: f.valuePresent,
+                  match: f.match,
+                  confidence: f.confidence,
+                  recognitionScore: f.recognitionScore,
+                  route: f.route,
+                  reason: f.reason,
+                })),
+              },
+              null,
+              2,
+            ),
           },
         ],
       };
-    }
-
-    const body = new FormData();
-    body.append("file", new Blob([readFileSync(filePath)]), basename(filePath));
-    body.append(
-      "instructions",
-      JSON.stringify({
-        schema: INVOICE_SCHEMA,
-        parseConfig: { mode },
-        options: { includeCitations: true, strict: false, multimodal: false },
-      }),
-    );
-
-    let res;
-    try {
-      res = await fetch(EXTRACT_URL, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "x-nutrient-api-version": API_VERSION },
-        body,
-        signal: AbortSignal.timeout(180_000),
-        redirect: "error",
-      });
-    } catch (err) {
-      return { isError: true, content: [{ type: "text", text: `network: ${String(err)}` }] };
-    }
-    const raw = await res.text();
-    if (!res.ok) {
-      return { isError: true, content: [{ type: "text", text: `HTTP ${res.status}: ${raw.slice(0, 400)}` }] };
-    }
-
-    const output = JSON.parse(raw).output ?? {};
-    const routed = routeFields(output.data ?? {}, output.metadata ?? {}, { documentType });
-    const summary = summarizeRouting(routed);
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              mode,
-              thresholds: routed.limits,
-              summary: {
-                total: summary.total,
-                auto: summary.auto,
-                needsReview: summary.human,
-                byMatch: summary.byMatch,
-                vetoedByOcrFloor: summary.savedByRecognition,
-              },
-              fields: routed.fields.map((f) => ({
-                field: f.field,
-                value: f.valuePresent ? f.value : null,
-                valuePresent: f.valuePresent,
-                match: f.match,
-                confidence: f.confidence,
-                recognitionScore: f.recognitionScore,
-                route: f.route,
-                reason: f.reason,
-              })),
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
-  },
+    }),
 );
 
 // --- Main -------------------------------------------------------------------
@@ -474,7 +654,11 @@ async function main() {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  console.error("[nutrient-mcp-server] fatal:", err);
-  process.exit(1);
-});
+// Only run when executed directly. Importing this module (the cache tests do)
+// must not open a stdio transport or bind the approval port.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error("[nutrient-mcp-server] fatal:", err);
+    process.exit(1);
+  });
+}

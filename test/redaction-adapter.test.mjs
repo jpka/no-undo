@@ -27,6 +27,7 @@ import {
   createRedactionPlan,
   beginRedactionApply,
   confirmRedactionExecuted,
+  confirmRedactionFailed,
   listExecutingRedactions,
   renderRedactionPlan,
 } from "../mcp/nutrient/redaction-adapter.mjs";
@@ -373,5 +374,98 @@ describe("describeTarget", () => {
   test("names presets and regexes directly", () => {
     assert.match(describeTarget({ strategy: "preset", preset: "email-address" }), /email-address/);
     assert.match(describeTarget({ strategy: "regex", regex: "\\d{3}-\\d{2}" }), /regex/);
+  });
+
+  test("never prints a regex pattern, which can embed the value being hidden", () => {
+    // /Kaniefsky|555-01-0042/ is a matcher made of exactly the secrets it hides.
+    const d = describeTarget({ strategy: "regex", regex: "Kaniefsky|555-01-0042" });
+    assert.ok(!d.includes("Kaniefsky"), "literal in the pattern must not reach the UI");
+    assert.ok(!d.includes("555-01-0042"));
+    assert.match(d, /withheld from this view/);
+    assert.match(d, /contains literal runs/);
+  });
+
+  test("distinguishes a pure character-class regex from one carrying literals", () => {
+    const classes = describeTarget({ strategy: "regex", regex: "\\d{3}-\\d{2}-\\d{4}" });
+    assert.match(classes, /character classes only/);
+  });
+});
+
+// --- Security-critical option handling --------------------------------------
+
+describe("createRedactionPlan cannot be talked out of the gate", () => {
+  test("alwaysRequireApproval cannot be disabled by the caller", async () => {
+    // The spread order is the whole defense here: with `...options` last, a
+    // caller could hand itself an ungated irreversible action.
+    const j = tmpJournal();
+    try {
+      const store = createRedactionStore(j.path);
+      const staged = await stageRedactions(DOC, TARGETS);
+      const payload = {
+        documentName: "invoice.pdf",
+        digest: staged.digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      };
+      const { planToken } = createRedactionPlan(store, payload, {
+        alwaysRequireApproval: false,
+      });
+      const r = beginRedactionApply(store, planToken, payload, staged.digest);
+      assert.equal(r.ok, false, "the gate must hold even when the caller asks to skip it");
+      assert.match(r.error, /approval/i);
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  test("dataDigest cannot be replaced by the caller", async () => {
+    // Otherwise an approval could be bound to a digest the caller chose rather
+    // than to the document that will actually be redacted.
+    const j = tmpJournal();
+    try {
+      const store = createRedactionStore(j.path);
+      const staged = await stageRedactions(DOC, TARGETS);
+      const payload = {
+        documentName: "invoice.pdf",
+        digest: staged.digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      };
+      const { planToken } = createRedactionPlan(store, payload, {
+        dataDigest: "0".repeat(64),
+      });
+      store.approve(planToken);
+      // The plan is bound to the real staged digest, so that is what passes...
+      const good = beginRedactionApply(store, planToken, payload, staged.digest);
+      assert.equal(good.ok, true, "the real staged digest must be the binding");
+    } finally {
+      j.cleanup();
+    }
+  });
+});
+
+// --- Confirm helpers must not report success on failure ---------------------
+
+describe("confirm helpers branch on ok alone", () => {
+  /** A store stub whose confirms fail without attaching an error object. */
+  function silentlyFailingStore() {
+    return {
+      confirmExecuted: async () => ({ ok: false }),
+      confirmFailed: async () => ({ ok: false }),
+    };
+  }
+
+  test("confirmRedactionExecuted reports failure when no error object is attached", async () => {
+    // The bug this guards: `!result.ok && result.error` fell through to ok:true,
+    // writing a false "executed" claim into the log this module keeps honest.
+    const r = await confirmRedactionExecuted(silentlyFailingStore(), "tok");
+    assert.equal(r.ok, false);
+    assert.match(r.error, /without reporting a reason/);
+  });
+
+  test("confirmRedactionFailed reports failure when no error object is attached", async () => {
+    const r = await confirmRedactionFailed(silentlyFailingStore(), "tok", "why");
+    assert.equal(r.ok, false);
+    assert.match(r.error, /without reporting a reason/);
   });
 });

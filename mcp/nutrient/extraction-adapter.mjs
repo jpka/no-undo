@@ -436,7 +436,12 @@ export function routeField(entry, limits) {
   }
 
   // 7. Grounding veto: the composite passed, but the value looks inferred
-  //    rather than read off the page.
+  //    rather than read off the page. An ABSENT groundingScore passes through
+  //    here, unlike an absent recognitionScore in step 9. That asymmetry is
+  //    deliberate: the match label already carries a grounding verdict —
+  //    `id_match` means the value resolved to a source block — so a missing
+  //    component score is redundant rather than a blind spot. No label reports
+  //    OCR quality, which is why absence there has to be treated as a gap.
   if (grounding !== undefined && grounding < limits.grounding) {
     return decide(
       "human",
