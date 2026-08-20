@@ -107,7 +107,7 @@ Both findings point the same way: the signals that tell you an action is safe ar
 - 7/7 tests pass against Gate 0 fixtures (no live API).
 - Fixed broken import path (`src/index.js` → correct `dist/index.js` relative path).
  
-**Aug 26–28 — ~12h. Nutrient stage.** ✅ **DONE Aug 20, six days early — see `docs/nutrient-stage-aug20.md`.** The blocker cleared (Data Extraction key in `.env`), so extraction routing, staged redaction, the Nutrient MCP server, and 85 new tests all landed. 92/92 tests pass repo-wide.
+**Aug 26–28 — ~12h. Nutrient stage.** ✅ **DONE Aug 20, six days early — merged as `799e46c` (PR #10). See `docs/nutrient-stage-aug20.md`.** The blocker cleared (Data Extraction key in `.env`), so extraction routing, staged redaction, the Nutrient MCP server, and 97 new tests all landed. 104/104 tests pass repo-wide. Five review rounds, 19 findings fixed, 1 declined as upstream and filed as core [#20](https://github.com/jpka/safe-write-mcp-core/issues/20).
 
 **Plan correction, Aug 20: the Gate 0 probe was pointed at the wrong endpoint.** `/extraction/parse` returns layout elements with one composite `confidence` each. The match labels and `confidenceComponents` this whole routing design rests on live only on **`/extraction/extract`**, the schema-based endpoint, under `output.metadata`. `/parse` could never have calibrated the gate. `mcp/nutrient/extract-probe.mjs` is the probe that can; the old one stays as the entitlement record.
 
