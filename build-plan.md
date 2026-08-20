@@ -100,6 +100,8 @@ Extraction routing per the Aug 20 Nutrient SE guidance (`docs/nutrient-support-a
  
 **Aug 29–30 — ~8h. Audit and UI.**
 Hash-chained JSONL sink with `prevHash`. Approval page that renders the document and the recipient list, not `JSON.stringify`. Drop raw `payload` from `GET /api/plans` — right now a host's careful `renderPlan` redaction is silently bypassed by that endpoint, which is embarrassing in a PII demo.
+
+*Aug 20 correction: the `/api/plans` item is filed in the wrong repo and is now tracked upstream as [`safe-write-mcp-core#18`](https://github.com/jpka/safe-write-mcp-core/issues/18).* The endpoint is not in this repo — it is `planToJson()` in `safe-write-mcp-core`'s `src/approvalServer.ts`, which emits `payload` alongside the redacted `render` on the same response. **Confirmed by live reproduction, not inspection:** a `renderPlan` hook exposing only the folder name still returned an SSN and the full recipient list over `GET /api/plans`. Two consequences for this plan: the fix is a core patch plus a version bump consumed here, not a local edit; and **servers A and C have the same leak**, since it is in the published package rather than this host. Decide whether to patch core properly (a response-shape change, so a bump and a `DECISIONS.md` note) or shim it here for the demo and fix core after — the shim is the cheaper path if Aug 29–30 is tight, and the cut list already ranks the polished approval UI as droppable. The other two items in this row are genuinely local and unaffected.
  
 **Aug 31 — feature freeze.** README, architecture diagram, setup instructions that a judge can actually follow.
  
