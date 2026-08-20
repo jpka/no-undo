@@ -201,6 +201,46 @@ export function pruneStagedCache(now = Date.now()) {
 export { safePath, DOCUMENT_ROOT, CANONICAL_ROOT, assertDistinct };
 
 /**
+ * Outcomes this process actually observed from `/build`, keyed by plan token.
+ *
+ * The recovery tool must not take the agent's word for how an apply failed. An
+ * agent-supplied "it returned 422" is exactly the claim that would need
+ * verifying, and accepting it lets a fabricated status release an approved plan
+ * for another irreversible apply with no new human decision. So the status is
+ * recorded here by the code that made the call, and recovery is permitted only
+ * for tokens whose recorded outcome was a genuine rejection.
+ *
+ * Deliberately in-memory: a restart forgets the evidence, which fails in the safe
+ * direction — the plan stays executing and a human resolves it, rather than the
+ * server inventing a provenance it no longer has.
+ * @type {Map<string, {rejected: boolean, status: number, transportError: boolean, at: number}>}
+ */
+const observedFailures = new Map();
+
+/**
+ * Record what /build actually returned for a plan's apply attempt.
+ * @param {string} planToken
+ * @param {{status: number, transportError: boolean}} outcome
+ */
+function recordApplyFailure(planToken, outcome) {
+  observedFailures.set(planToken, {
+    // A 4xx/5xx means the request was rejected before the redaction ran, so the
+    // document is untouched and a retry is safe. A transport error means the
+    // request may have been processed before the connection broke, so it is not.
+    rejected: !outcome.transportError && outcome.status >= 400 && outcome.status <= 599,
+    status: outcome.status,
+    transportError: outcome.transportError,
+    at: Date.now(),
+  });
+}
+
+/** Test seam for the recovery-evidence ledger. */
+export const __observedFailuresForTest = {
+  map: observedFailures,
+  record: recordApplyFailure,
+};
+
+/**
  * Test seam for the cache bounds. Not used by the server itself — exported so
  * the eviction policy can be exercised without booting a stdio transport.
  */
@@ -411,6 +451,12 @@ server.registerTool(
       });
 
       if (!applied.ok) {
+        // Record what /build actually returned, so the recovery tool can check
+        // observed evidence instead of trusting the agent's account of it.
+        recordApplyFailure(planToken, {
+          status: applied.status,
+          transportError: applied.transportError,
+        });
         // A rejection means the destructive call did not happen, so releasing the
         // plan is safe. A transport error is ambiguous — the request may have been
         // processed before the connection broke — so the plan stays executing and
@@ -531,44 +577,90 @@ server.registerTool(
 server.registerTool(
   "nutrient_confirm_failed",
   {
-    title: "Release a plan after a provably-failed apply",
+    title: "Release a plan whose apply this server saw rejected",
     description:
-      "Release a plan back to retryable. Requires the /build HTTP status that " +
-      "proves the destructive call was rejected before it ran — a 4xx or 5xx " +
-      "response. Transport failures and timeouts are NOT accepted here, because " +
-      "the request may have been processed before the connection broke; those " +
-      "must be resolved by a human inspecting the document. Note that releasing " +
-      "a plan leaves it approved, so the retry does not need fresh approval.",
+      "Release a plan back to retryable. Takes no evidence from the caller: the " +
+      "server checks the /build outcome it recorded itself when the apply ran. " +
+      "Only a genuine 4xx/5xx rejection, where the document was provably not " +
+      "touched, permits a release. Transport failures, timeouts, and anything " +
+      "this process did not observe are refused, and those plans stay executing " +
+      "for a human. Note that a released plan remains approved, so the retry " +
+      "does not require fresh approval.",
     inputSchema: {
       planToken: z.string(),
-      rejectedWithStatus: z
-        .number()
-        .int()
-        .min(400)
-        .max(599)
-        .describe(
-          "The HTTP status /build returned. Must be 4xx or 5xx: evidence that the " +
-            "apply was rejected rather than possibly-executed.",
-        ),
-      reason: z.string().optional(),
+      reason: z.string().optional().describe("Operator note, recorded in the audit trail"),
     },
   },
-  async ({ planToken, rejectedWithStatus, reason }) =>
+  async ({ planToken, reason }) =>
     guarded(async () => {
-      // The gate weakness this closes: releasing a plan leaves it *approved*, so
-      // the same token can begin another apply with no new human decision. One
-      // approval therefore authorized unlimited retries. Verified before fixing:
-      // approve once, begin, release, begin again -> succeeded.
-      //
-      // Requiring a rejection status does not remove the retry, but it does mean
-      // the agent cannot release a plan whose outcome is unknown, which is the
-      // case where a retry would double-apply. Ambiguous failures stay executing
-      // and visible in nutrient_list_executing for a human.
+      // An earlier version took a `rejectedWithStatus` argument from the agent.
+      // That was not a gate: it asked the caller to self-certify the very fact
+      // that needed verifying, so a fabricated 422 released an approved plan for
+      // another irreversible apply. The server made the call and already knows
+      // the answer, so it consults its own record and ignores the caller's view.
+      const observed = observedFailures.get(planToken);
+
+      if (!observed) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  planToken,
+                  status: "executing",
+                  error:
+                    "this process has no recorded /build failure for that plan, so there " +
+                    "is no evidence the apply was rejected",
+                  note:
+                    "Recovery is refused rather than guessed. If the apply genuinely never " +
+                    "ran, re-plan from the staged document; if its outcome is unknown, a " +
+                    "human must inspect the document — see nutrient_list_executing.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      if (!observed.rejected) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  planToken,
+                  status: "executing",
+                  observedStatus: observed.status,
+                  observedTransportError: observed.transportError,
+                  error:
+                    "the recorded outcome does not prove the apply was rejected, so " +
+                    "releasing the plan could permit a second destructive run",
+                  note:
+                    "/build has no server-side state to reconcile against, so an ambiguous " +
+                    "failure is a human decision. The plan stays executing.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
       const r = await confirmRedactionFailed(
         getStore(),
         planToken,
-        reason ? `HTTP ${rejectedWithStatus}: ${reason}` : `HTTP ${rejectedWithStatus}`,
+        reason
+          ? `observed HTTP ${observed.status}: ${reason}`
+          : `observed HTTP ${observed.status}`,
       );
+      if (r.ok) observedFailures.delete(planToken);
       return {
         isError: !r.ok,
         content: [
@@ -579,9 +671,11 @@ server.registerTool(
                 planToken,
                 ...r,
                 status: r.ok ? "retryable" : "executing",
+                observedStatus: observed.status,
                 note: r.ok
-                  ? "The plan is approved and retryable. A retry does NOT require new " +
-                    "human approval, so only retry the operation the human already saw."
+                  ? "Released on the server's own record of a rejected apply. The plan is " +
+                    "still approved, so a retry needs no new approval — only retry the " +
+                    "operation the human already reviewed."
                   : undefined,
               },
               null,

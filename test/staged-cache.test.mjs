@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 
 import {
   __stagedCacheForTest,
+  __observedFailuresForTest,
   safePath,
   CANONICAL_ROOT,
   assertDistinct,
@@ -197,7 +198,61 @@ describe("assertDistinct", () => {
   });
 });
 
-// --- Confirmed preset ids ----------------------------------------------------
+// --- Recovery must rest on observed evidence, not caller claims -------------
+
+describe("recovery evidence ledger", () => {
+  const { map: observed, record } = __observedFailuresForTest;
+
+  beforeEach(() => {
+    observed.clear();
+  });
+
+  test("a 4xx rejection is recorded as releasable", () => {
+    // The request was refused before the redaction ran, so the document is
+    // untouched and a retry cannot double-apply.
+    record("tok", { status: 422, transportError: false });
+    assert.equal(observed.get("tok").rejected, true);
+  });
+
+  test("a transport error is NOT releasable", () => {
+    // The request may have been processed before the connection broke. /build has
+    // no state to reconcile against, so this is a human decision.
+    record("tok", { status: 0, transportError: true });
+    assert.equal(observed.get("tok").rejected, false);
+  });
+
+  test("a 2xx or unknown status is not treated as a rejection", () => {
+    record("a", { status: 200, transportError: false });
+    record("b", { status: 0, transportError: false });
+    assert.equal(observed.get("a").rejected, false);
+    assert.equal(observed.get("b").rejected, false);
+  });
+
+  test("an unrecorded token has no evidence at all", () => {
+    // This is the case that closes the bypass: a caller cannot manufacture
+    // evidence by asserting a status, because the tool never reads the caller's
+    // account — only what this process observed when it made the call.
+    assert.equal(observed.has("never-attempted"), false);
+    assert.equal(observed.get("never-attempted"), undefined);
+  });
+
+  test("the whole 4xx-5xx range is releasable, and nothing outside it", () => {
+    for (const s of [400, 401, 422, 429, 500, 503, 599]) {
+      record(`r${s}`, { status: s, transportError: false });
+      assert.equal(observed.get(`r${s}`).rejected, true, `${s} should be releasable`);
+    }
+    for (const s of [0, 100, 200, 204, 301, 399, 600]) {
+      record(`n${s}`, { status: s, transportError: false });
+      assert.equal(observed.get(`n${s}`).rejected, false, `${s} must not be releasable`);
+    }
+  });
+
+  test("a transport error at a 5xx-looking status is still not releasable", () => {
+    // transportError wins: the status is meaningless when no response arrived.
+    record("tok", { status: 500, transportError: true });
+    assert.equal(observed.get("tok").rejected, false);
+  });
+});
 
 describe("CONFIRMED_PRESETS", () => {
   /**
