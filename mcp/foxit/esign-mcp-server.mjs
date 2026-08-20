@@ -24,10 +24,11 @@ import { z } from "zod";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import { createApprovalServer } from "safe-write-mcp-core";
+import { startApprovalServer } from "safe-write-mcp-core";
 
 import {
   createEsignStore,
+  loadEsignStore,
   createEsignFolder,
   beginEsignSend,
   confirmEsignExecuted,
@@ -41,20 +42,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Journal path — durable state lives alongside this script.
 const JOURNAL_PATH = process.env.ESIGN_JOURNAL_PATH ?? join(__dirname, ".esign-journal.jsonl");
 
-// Lazily-initialized store. Tools call getStore() so the first tool call
-// initializes the store (and replays the journal for crash recovery).
+// Lazily-initialized store. On startup we use loadEsignStore() which replays
+// the journal and reconciles any stuck-executing plans before requests are
+// accepted. Tools call getStore() to get the already-initialized store.
 let store = null;
 
 /**
- * Get or create the eSign plan store. Replays the journal on first call
- * so a restarted process recovers stuck-executing plans.
- * @returns {import("./esign-adapter.mjs").PlanStore}
+ * Get the eSign plan store. Must be called after initializeStore().
+ * @returns {import("safe-write-mcp-core/dist/planStore.js").PlanStore<any>}
  */
 function getStore() {
   if (!store) {
-    store = createEsignStore(JOURNAL_PATH);
+    throw new Error("[esign-mcp-server] store not initialized — call initializeStore() first");
   }
   return store;
+}
+
+/**
+ * Initialize the store by loading the journal and replaying any stuck plans.
+ * @param {string} journalPath
+ * @returns {Promise<void>}
+ */
+async function initializeStore(journalPath) {
+  store = await loadEsignStore(journalPath);
 }
 
 // --- Approval server --------------------------------------------------------
@@ -178,6 +188,11 @@ server.registerTool(
 // Transitions the plan to "executing". The core enforces that the plan must
 // be approved first (alwaysRequireApproval). After this returns, the host
 // calls sendDraftFolder() and then confirms with confirm/failed.
+//
+// Accepts the original payload for restart resilience — the in-memory
+// payloadCache is lost on restart, so callers can provide the payload
+// to ensure the same fingerprint is used (the core's beginExecute will
+// reject a mismatched fingerprint).
 
 server.registerTool(
   "esign_begin_send",
@@ -186,22 +201,33 @@ server.registerTool(
     description:
       "Transition an approved plan to 'executing'. Requires human approval " +
       "first. After this succeeds, call the gateway send-draft endpoint, " +
-      "then confirm with esign_confirm_executed or esign_confirm_failed.",
+      "then confirm with esign_confirm_executed or esign_confirm_failed. " +
+      "Provide the original payload (folderName, recipients) to ensure " +
+      "restart safety.",
     inputSchema: {
       planToken: z.string().describe("The plan token from esign_create_draft"),
+      payload: z.object({
+        folderName: z.string(),
+        recipients: z.array(z.object({
+          firstName: z.string(),
+          lastName: z.string(),
+          email: z.string(),
+        })),
+      }).describe("The original payload used to create the plan (for fingerprint matching)"),
     },
   },
-  async ({ planToken }) => {
+  async ({ planToken, payload }) => {
     const s = getStore();
-    const payload = payloadCache.get(planToken);
-    if (!payload) {
+    // Use provided payload or fall back to cache
+    const resolvedPayload = payload ?? payloadCache.get(planToken);
+    if (!resolvedPayload) {
       return {
         isError: true,
         content: [
           {
             type: "text",
             text: JSON.stringify(
-              { error: "payload not found — call esign_create_draft first" },
+              { error: "payload not found — provide the original payload from esign_create_draft" },
               null,
               2,
             ),
@@ -209,7 +235,7 @@ server.registerTool(
         ],
       };
     }
-    const result = beginEsignSend(s, planToken, payload);
+    const result = beginEsignSend(s, planToken, resolvedPayload);
     if (!result.ok) {
       return {
         isError: true,
@@ -368,9 +394,30 @@ server.registerTool(
 // --- Main -------------------------------------------------------------------
 
 async function main() {
+  // Initialize the store (replays journal, reconciles stuck plans)
+  await initializeStore(JOURNAL_PATH);
+  console.error("[esign-mcp-server] store initialized, journal replayed");
+
+  // Start the approval server in-process with the shared PlanStore
+  const approvalHandle = await startApprovalServer(getStore(), {
+    renderPlan: renderEsignPlan,
+    title: "eSign Approval Queue",
+  });
+  console.error(
+    `[esign-mcp-server] approval server listening on http://${approvalHandle.host}:${approvalHandle.port}`,
+  );
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[esign-mcp-server] connected over stdio");
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    await approvalHandle.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main().catch((err) => {

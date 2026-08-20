@@ -16,5 +16,4 @@ jobs:
           node-version: ">=18"
           cache: "npm"
       - run: npm install
-      - run: ls node_modules/safe-write-mcp-core/ || echo "MISSING safe-write-mcp-core"
       - run: node --test test/esign-adapter.test.mjs
