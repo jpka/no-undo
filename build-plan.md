@@ -136,6 +136,8 @@ Also found and fixed a real bug: `store.beginExecute()` takes the current digest
 **Sep 3, before 2pm ART.** Submit. Not at 1:55.
  
 **Cut list, in order, if time runs short:** N-of-M approval → approval-server authentication → Nutrient redaction (keep extraction-with-confidence, which is enough to satisfy "meaningfully") → the polished approval UI. **Never cut:** the crash-safety fix or the demo video.
+
+*Aug 20 note on approval-server authentication, now that it has a filed home:* CodeRabbit raised it on PR #10 and it is real — `startApprovalServer` binds loopback and checks `Host`/`Origin`/`Sec-Fetch-Site`, but carries no shared secret, so any local process that sends the expected headers can approve a plan. It is **upstream**, filed as `safe-write-mcp-core` [issue #20](https://github.com/jpka/safe-write-mcp-core/issues/20), and A and C inherit it too. Deliberately left on the cut list rather than fixed downstream: patching around it in `no-undo` would leave the other two servers exposed and triplicate the fix. If a judge asks about it, the honest answer is that the threat model the header checks cover is a malicious browser page, not a hostile local process, and the gap is tracked in the core with a proposed per-session bearer token.
  
 **Contingency, if Gate 0 says eSign is not available to us** *(added Aug 18; full version in `docs/review-aug18.md` §5)*. Decide within one hour, ranked:
 1. Separate eSign trial signup, if one exists. Changes nothing else.
