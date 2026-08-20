@@ -185,13 +185,22 @@ describe("esign-adapter", () => {
         folderName: "crash-test",
         recipients: [{ firstName: "Dan", lastName: "Brown", email: "dan@example.com" }],
       };
-      const { planToken } = await createEsignFolder(store1, payload);
+      const { planToken, folderId } = await createEsignFolder(store1, payload);
       store1.approve(planToken);
       beginEsignSend(store1, planToken, payload);
 
       // Verify it's executing
       const executingBefore = listExecutingPlans(store1);
       assert.equal(executingBefore.length, 1);
+
+      // Simulate gateway being unreachable — folder status is "unknown"
+      // so the plan stays in "executing" after fromJournal's auto-reconcile
+      fixtures.set(`GET:/esign/api/v1/folders/myfolder?folderId=${folderId}`, {
+        ok: false,
+        status: 0,
+        text: "unreachable",
+        json: undefined,
+      });
 
       // Step 2: simulate crash — reload from journal
       const store2 = await loadEsignStore(j.path);

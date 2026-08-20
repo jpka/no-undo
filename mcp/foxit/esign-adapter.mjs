@@ -23,7 +23,7 @@
  * source — these tests do NOT call the live API.
  */
 
-import { PlanStore, FileJournal } from "../../safe-write-mcp-core/dist/index.js";
+import { PlanStore } from "safe-write-mcp-core";
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -285,9 +285,8 @@ export async function sendDraftFolder(folderId) {
  */
 export function createEsignStore(journalPath) {
   initDurableStores(journalPath);
-  const journal = journalPath ? new FileJournal(journalPath) : undefined;
   return new PlanStore({
-    planTtlMs: 5 * 60 * 1000, // 5 minutes — eSign sends should settle quickly
+    planTtlMs: 5 * 60 * 1000,
     audit: {
       record: (event) => {
         console.log(
@@ -296,21 +295,15 @@ export function createEsignStore(journalPath) {
         return undefined;
       },
     },
-    journal,
+    journalPath,
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
-      if (!folderId) {
-        console.error(
-          `[esign-adapter] no folderId for token ${planToken.slice(0, 8)}, cannot reconcile`,
-        );
-        return "unknown";
-      }
+      if (!folderId) return "unknown";
       const status = await checkFolderStatus(folderId);
       if (status === "SHARED") return "done";
       if (status === "DRAFT") return "not-done";
       return "unknown";
     },
-    reconcileTimeoutMs: 10_000, // eSign status check is fast; 10s is generous
   });
 }
 
@@ -319,38 +312,24 @@ export function createEsignStore(journalPath) {
  * journal, hydrates durable tokenToFolder and processedEvents stores, and
  * reconciles any stuck-executing plans.
  * @param {string} journalPath
- * @param {Partial<import("../../safe-write-mcp-core/dist/index.js").PlanStoreOptions>} [options]
+ * @param {Partial<import("safe-write-mcp-core/dist/index.js").PlanStoreOptions>} [options]
  * @returns {Promise<PlanStore<EsignPayload>>}
  */
 export async function loadEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
-  // Preload tokenToFolder from the journal's stored extra.folderId before
-  // reconciliation. If .token-map.json was lost, the journal is the
-  // authoritative source.
   preloadTokenMapFromJournal(journalPath);
-  // Create a store — the core replays the journal on construction and
-  // restores executing plans.
-  const store = new PlanStore({
+  const store = await PlanStore.fromJournal(journalPath, {
     ...options,
-    journal: new FileJournal(journalPath),
+    journalPath,
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
-      if (!folderId) {
-        console.error(
-          `[esign-adapter] no folderId for token ${planToken.slice(0, 8)}, cannot reconcile`,
-        );
-        return "unknown";
-      }
+      if (!folderId) return "unknown";
       const status = await checkFolderStatus(folderId);
       if (status === "SHARED") return "done";
       if (status === "DRAFT") return "not-done";
       return "unknown";
     },
-    reconcileTimeoutMs: options.reconcileTimeoutMs ?? 10_000,
   });
-  // Rebuild tokenToFolder from recovered executing plans' extra.folderId as a
-  // fallback — if the durable store file was lost, the journal's extra field
-  // is the authoritative source for folderId mappings.
   if (tokenToFolder) {
     for (const plan of store.listExecuting()) {
       const folderId = plan.extra?.folderId;
@@ -405,7 +384,7 @@ function preloadTokenMapFromJournal(journalPath) {
  * execute the send later.
  * @param {PlanStore<EsignPayload>} store
  * @param {EsignPayload} payload
- * @param {Partial<import("../../safe-write-mcp-core/dist/index.js").PlanCreateOptions>} [options]
+ * @param {Partial<import("safe-write-mcp-core/dist/index.js").PlanCreateOptions>} [options]
  * @returns {Promise<{planToken: string, folderId: string} | {error: string, status?: number}>}
  */
 export async function createEsignFolder(store, payload, options = {}) {

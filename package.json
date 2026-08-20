@@ -1,0 +1,13 @@
+{
+  "name": "no-undo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Crash-safe agent approval gate for irreversible eSign sends",
+  "dependencies": {
+    "@foxitsoftware/foxit-pdf-api-mcp-server": "1.1.2",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "safe-write-mcp-core": "^0.2.0",
+    "zod": "^4.4.3"
+  }
+}

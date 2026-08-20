@@ -1,4 +1,11 @@
 node_modules/
 .env
 *.local
-tool-output/
+tool-output/node_modules/
+*.log
+dist/
+.tmp/
+.DS_Store
+esign-journal.jsonl
+.token-map.json
+.webhook-dedup.json

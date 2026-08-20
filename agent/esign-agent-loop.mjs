@@ -21,7 +21,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startApprovalServer } from "../safe-write-mcp-core/dist/index.js";
+import { startApprovalServer } from "safe-write-mcp-core";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -51,8 +51,8 @@ async function connectMcp(name, serverPath, env = {}) {
  * Render an eSign plan for the approval UI.
  * Shows the folder name, recipient list, and an explicit irrevocability warning.
  * Does NOT dump the raw payload JSON.
- * @param {import("../safe-write-mcp-core/dist/approvalServer.js").PendingPlan<any>} plan
- * @returns {import("../safe-write-mcp-core/dist/approvalServer.js").RenderablePlan}
+ * @param {import("safe-write-mcp-core/dist/approvalServer.js").PendingPlan<any>} plan
+ * @returns {import("safe-write-mcp-core/dist/approvalServer.js").RenderablePlan}
  */
 function renderEsignPlan(plan) {
   const payload = plan.payload || {};
