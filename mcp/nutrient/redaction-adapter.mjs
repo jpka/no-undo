@@ -133,6 +133,32 @@ async function postBuild(body) {
  */
 
 /**
+ * Preset identifiers confirmed against the live /build endpoint (Aug 20, 2026).
+ *
+ * Each of these returned 200. The obvious short forms do NOT work and return 400:
+ * `email`, `phone`, `ssn`, `email_addresses`, `emailAddress`, `phone-number`, and
+ * `us-social-security-number` were all rejected. The naming is inconsistent
+ * enough to be worth pinning rather than guessing at call time — a typo here is
+ * a 400 at best and a silently-unredacted document at worst, since a preset that
+ * matches nothing stages zero regions and still returns a valid PDF.
+ *
+ * Not exhaustive: this is what was probed, not the complete vendor list.
+ */
+export const CONFIRMED_PRESETS = Object.freeze([
+  "email-address",
+  "social-security-number",
+  "credit-card-number",
+  "north-american-phone-number",
+  "international-phone-number",
+  "date",
+  "time",
+  "url",
+  "ipv4",
+  "ipv6",
+  "vin",
+]);
+
+/**
  * Build the `createRedactions` actions for a target list.
  * @param {RedactionTarget[]} targets
  * @returns {Array<Record<string, unknown>>}

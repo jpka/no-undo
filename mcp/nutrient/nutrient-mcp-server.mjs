@@ -40,6 +40,7 @@ import {
   listExecutingRedactions,
   loadRedactionStore,
   renderRedactionPlan,
+  CONFIRMED_PRESETS,
 } from "./redaction-adapter.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -230,7 +231,18 @@ const targetSchema = z.discriminatedUnion("strategy", [
     caseSensitive: z.boolean().optional(),
   }),
   z.object({ strategy: z.literal("regex"), regex: z.string() }),
-  z.object({ strategy: z.literal("preset"), preset: z.string() }),
+  z.object({
+    strategy: z.literal("preset"),
+    preset: z
+      .string()
+      .describe(
+        // Named explicitly because a wrong preset is worse than an error: one that
+        // matches nothing stages zero regions and still returns a valid PDF, so the
+        // document looks processed and is not redacted at all.
+        `Confirmed preset ids (live-verified): ${CONFIRMED_PRESETS.join(", ")}. ` +
+          "Short forms such as email, phone, or ssn are rejected with 400.",
+      ),
+  }),
 ]);
 
 server.registerTool(

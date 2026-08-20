@@ -4,10 +4,27 @@ Implements the build plan's Aug 26–28 item, six days early, unblocked by the
 Data Extraction key landing in `.env`.
 
 **What was live-verified, precisely:** the extraction observations below (all
-three findings, across all three modes) and the stage-then-apply redaction path
-with a literal `text` target. The committed transcripts are in `docs/fixtures/`.
-**Not yet verified:** the built-in PII preset identifiers — the flow they run
-through is proven, the preset names are still assumed. See "Still open".
+three findings, across all three modes), the stage-then-apply redaction path, and
+the built-in PII preset identifiers. The committed transcripts are in
+`docs/fixtures/`.
+
+### Preset identifiers, probed against `/build`
+
+The naming is inconsistent enough that guessing fails, and failing quietly is the
+dangerous part: a preset that matches nothing stages zero regions and still
+returns a valid PDF, so the document looks processed and is not redacted.
+
+**Valid (HTTP 200):** `email-address`, `social-security-number`,
+`credit-card-number`, `north-american-phone-number`,
+`international-phone-number`, `date`, `time`, `url`, `ipv4`, `ipv6`, `vin`.
+
+**Rejected (HTTP 400):** `email`, `phone`, `ssn`, `email_addresses`,
+`emailAddress`, `phone-number`, `us-social-security-number`.
+
+Pinned as `CONFIRMED_PRESETS` in the adapter, frozen, surfaced in the MCP tool's
+own schema description, and covered by tests that assert the rejected short forms
+never appear in the list. Not exhaustive — it is what was probed, not the whole
+vendor catalogue.
 
 ## What shipped
 
@@ -204,9 +221,9 @@ so its two-argument call is correct. No latent issue there.
   document type, not one synthetic invoice. `--calibrate` is the tool for it.
 - The MCP `stagedCache` is in-memory and lost on restart, deliberately: after a
   crash a document should be re-staged, not applied from half-known state.
-- Redaction presets were exercised with a literal `text` target. The preset names
-  for the built-in PII categories are still worth confirming against the live API
-  before the demo leans on them.
+- ~~Redaction preset names need confirming.~~ **Done** — probed live, pinned as
+  `CONFIRMED_PRESETS`. See the table at the top. The list is not exhaustive, so a
+  preset outside it should be probed before use rather than assumed.
 - Jon Addams offered to review extraction responses where routing felt wrong.
   Finding B is worth sending him: `confidenceComponents` said 0.95 grounding on a
   misread value, and `recognitionScore` was the only dissent.

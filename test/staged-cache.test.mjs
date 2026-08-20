@@ -22,6 +22,7 @@ import {
   CANONICAL_ROOT,
   assertDistinct,
 } from "../mcp/nutrient/nutrient-mcp-server.mjs";
+import { CONFIRMED_PRESETS } from "../mcp/nutrient/redaction-adapter.mjs";
 
 const { map, max, ttlMs, prune } = __stagedCacheForTest;
 
@@ -193,5 +194,29 @@ describe("assertDistinct", () => {
 
   test("allows distinct paths", () => {
     assert.doesNotThrow(() => assertDistinct("/root/doc.pdf", "/root/doc.staged.pdf"));
+  });
+});
+
+// --- Confirmed preset ids ----------------------------------------------------
+
+describe("CONFIRMED_PRESETS", () => {
+  test("contains only ids verified against the live API", () => {
+    // Probed Aug 20: each of these returned 200 from /build.
+    for (const p of ["email-address", "social-security-number", "credit-card-number"]) {
+      assert.ok(CONFIRMED_PRESETS.includes(p), `${p} should be listed`);
+    }
+  });
+
+  test("excludes the plausible short forms the API rejects", () => {
+    // These all returned 400. Listing them would invite a silent failure: a
+    // preset that matches nothing stages zero regions and still returns a PDF,
+    // so the document looks processed and is not redacted.
+    for (const p of ["email", "phone", "ssn", "phone-number", "emailAddress"]) {
+      assert.ok(!CONFIRMED_PRESETS.includes(p), `${p} is rejected by the API and must not be listed`);
+    }
+  });
+
+  test("is frozen so a caller cannot append an unverified id", () => {
+    assert.throws(() => CONFIRMED_PRESETS.push("made-up"), TypeError);
   });
 });
