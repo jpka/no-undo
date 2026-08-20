@@ -49,19 +49,18 @@ for (const [name, url] of [
   }
 }
 
-const clientId = process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID;
-const clientSecret =
-  process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET;
-
-if (!clientId || !clientSecret) {
-  console.error(
-    "[esign-adapter] missing credentials: set FOXIT_CLIENT_ID and FOXIT_CLIENT_SECRET",
-  );
-  process.exit(1);
-}
-
 /** @returns {Record<string, string>} */
 function gatewayHeaders(extra = {}) {
+  const clientId = process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID;
+  const clientSecret =
+    process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "[esign-adapter] missing credentials: set FOXIT_CLIENT_ID and FOXIT_CLIENT_SECRET",
+    );
+  }
+
   return { client_id: clientId, client_secret: clientSecret, ...extra };
 }
 
