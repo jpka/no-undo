@@ -1,6 +1,6 @@
 # DevNetwork [API + Cloud + AI] Hackathon 2026 — Build Plan
  
-**Status:** registered, online phase running. First batch landed Aug 18 (ahead of its window); **Gate 0 landed Aug 18 — eSign 5/5 PASS, Nutrient Data Extraction blocked on a missing product key** (see `docs/gate0-aug18.md`). Plan revised Aug 18 (`docs/review-aug18.md`).
+**Status:** registered, online phase running. First batch landed Aug 18 (ahead of its window); **Gate 0 landed Aug 18 — eSign 5/5 PASS, Nutrient Data Extraction blocked on a missing product key** (see `docs/gate0-aug18.md`). Plan revised Aug 18 (`docs/review-aug18.md`). **Aug 20: Nutrient solutions engineer (Jon Addams) engaged with extraction-routing guidance — match labels over raw confidence thresholds, extraction confirmed stateless, redaction has a stage-then-apply review flow (see `docs/nutrient-support-aug20.md`). Nutrient stage revised Aug 20.**
 **Hard deadline:** Sept 3, 2026, 10:00am PDT = **2:00pm Argentina time**. Not "end of day Sept 3."
 **Time budget assumed:** ~60 hours (a few full days plus evenings) across Aug 18 – Sep 2. *Revised Aug 18: the day-by-day now sums to ~62h of coding plus ~5h of PR/review overhead plus an unestimated Aug 31 freeze day — call it **~70h against a ~60h budget**. The gap is real. It is absorbed by the cut list, which is why the cut list is ordered and why the never-cut items are only two.*
 **Tracks targeted:** Foxit + Nutrient DWS + Overall. One project, three entries — the rules explicitly allow entering as many challenges as you want, and allow stacking sponsor prizes with Overall.
@@ -27,7 +27,7 @@ The original pitch's architectural warning still stands and is now nearly free: 
 **Pipeline:**
  
 1. Messy input document in.
-2. **Nutrient DWS** — data extraction with confidence scores; spans below threshold route to the human. Then PII redaction. *(This is Nutrient's own suggested scenario #5, and it makes DWS load-bearing rather than decorative — which is their stated bar: "for at least one core document operation, meaningfully.")*
+2. **Nutrient DWS** — data extraction; routing decided on the per-field match label first (`fuzzy_match` / `not_found` go to the human regardless of the confidence number), composite confidence second, thresholds calibrated per document type (Aug 20 Nutrient SE guidance, `docs/nutrient-support-aug20.md`). Then PII redaction via the stage-then-apply flow, so redaction gets the same review checkpoint. *(This is Nutrient's own suggested scenario #5, and it makes DWS load-bearing rather than decorative — which is their stated bar: "for at least one core document operation, meaningfully.")*
 3. **Foxit's MCP server** — assembly, conversion, OCR, merge. All reversible, all unattended, using their published toolset as intended.
 4. **The gate.** Agent proposes an eSign send. The plan preview shows recipients, document digest, and an explicit irrevocability warning. Human approves or rejects.
 5. **Foxit eSign API** called directly with **client-side dedup**: the plan token keys a durable ledger, and a `folderStatus` reconciliation (DRAFT vs SHARED) ensures the send happens exactly once — then a hash-chained append-only audit record.
@@ -85,11 +85,18 @@ Also: no idempotency-key contract, no persisted state, `dataDigest` is advisory 
 
 *Delegated to `opencode run -m opencode/deepseek-v4-flash-free` across three rounds (initial implementation, then two CodeRabbit review-fix rounds), reviewed and merged by Claude Code.*
  
-**Aug 23–25 — ~12h. The eSign adapter and agent loop.**
-Prompt → document → proposed send. Foxit MCP for the reversible work, your gate on the send. Implements the `reconcile` callback against the **gateway** send-draft host (locked in Gate 0) — `POST /esign/api/v1/folders/sendDraftFolder`. Includes the **webhook dedup on `(folderId, event_name)`** that `docs/aug18-19.md` identified and no day previously owned.
+**Aug 23–25 — ~12h. The eSign adapter and agent loop.** ✅ DONE Aug 20, three days early — see PR #7 (`feat/esign-mcp-server-and-agent`).
+- MCP server (`mcp/foxit/esign-mcp-server.mjs`) exposes the crash-safe lifecycle as tools: `esign_create_draft`, `esign_begin_send`, `esign_confirm_executed`, `esign_confirm_failed`, `esign_list_executing`, `esign_reconcile`.
+- Approval server runs **in-process** (shares the PlanStore), with a custom `renderPlan` hook: folder name + recipient list + explicit irrevocability warning — NOT `JSON.stringify` on the raw payload (which would leak PII).
+- Custom renderPlan hook renders recipients + folder name + irrevocability warning instead of the core's `JSON.stringify` default.
+- Fixed `beginEsignSend` to require the payload explicitly (core can't reconstruct it from the journal).
+- Fixed `confirmFailed` to refuse when folder status is already SHARED (prevents double-send).
+- Fixed `loadEsignStore` to not depend on missing `PlanStore.fromJournal` (constructor already replays the journal).
+- 7/7 tests pass against Gate 0 fixtures (no live API).
+- Fixed broken import path (`src/index.js` → correct `dist/index.js` relative path).
  
 **Aug 26–28 — ~12h. Nutrient stage.** *(Prereq added Aug 18: Data Extraction key in `.env` as `NUTRIENT_DWS_EXTRACTION_API_KEY` — the current key is Processor-only and 403s on `/extraction/parse`.)*
-Extraction with confidence thresholds routing low-confidence spans to the same approval gate, then redaction. Reuse one approval UI for both decisions — that unity is the design argument. First run of `node mcp/nutrient/extraction-probe.mjs` once the key lands; the fixture and probe already ship from Gate 0.
+Extraction routing per the Aug 20 Nutrient SE guidance (`docs/nutrient-support-aug20.md`): the per-field **match label is the primary signal** — `fuzzy_match` and `not_found` route to the human unconditionally; composite confidence is a secondary tie-breaker, calibrated per document type against a representative sample (the score is relative and uncalibrated, so no single global cutoff). Use `confidenceComponents.groundingScore` when the gate should distinguish "found in the document" from "inferred." Calibration is an explicit step: run the representative sample through each mode (structure / understand / agentic) and record where `fuzzy_match` / `not_found` / low-confidence rates land per mode before locking thresholds. Extraction is stateless request/response (confirmed by Nutrient SE) — no server-side job state to resume, so retry dedup stays the per-operation digest decided Aug 18. Then redaction, using the Processor **stage-then-apply** flow so redaction gets its own review checkpoint. Reuse one approval UI for both decisions — that unity is the design argument. First run of `node mcp/nutrient/extraction-probe.mjs` once the key lands; the fixture and probe already ship from Gate 0.
  
 **Aug 29–30 — ~8h. Audit and UI.**
 Hash-chained JSONL sink with `prevHash`. Approval page that renders the document and the recipient list, not `JSON.stringify`. Drop raw `payload` from `GET /api/plans` — right now a host's careful `renderPlan` redaction is silently bypassed by that endpoint, which is embarrassing in a PII demo.
@@ -122,7 +129,7 @@ Everything here is an asset you needed anyway:
  
 ## Open items
 
-- **⚠ Human action (unblocks Aug 26–28): get a Nutrient Data Extraction API key** at `dashboard.nutrient.io` and add it to `.env` as `NUTRIENT_DWS_EXTRACTION_API_KEY`. The existing `NUTRIENT_API_KEY` is DWS-Processor-only (403 on `/extraction/parse`). Then run `node mcp/nutrient/extraction-probe.mjs` and commit the transcript. *This is the only open blocker; it does not hold up Aug 20–22 core work.*
+- **⚠ Human action (unblocks Aug 26–28): get a Nutrient Data Extraction API key** at `dashboard.nutrient.io` and add it to `.env` as `NUTRIENT_DWS_EXTRACTION_API_KEY`. The existing `NUTRIENT_API_KEY` is DWS-Processor-only (403 on `/extraction/parse`). Then run `node mcp/nutrient/extraction-probe.mjs` and commit the transcript. *This is the only open blocker; it does not hold up Aug 20–22 core work.* **Escalation path added Aug 20:** Jon Addams (Nutrient solutions engineer) is engaged on this exact pipeline — if the dashboard does not self-serve the extraction entitlement, reply to him directly; he has context and has offered to review extraction responses.
 - Apptio, useBruno, and Wundergraph have not published their challenges. Wundergraph (GraphQL federation gateway) is the one most likely to fit a "safe write gateway" story. Re-check `/details/sponsors` around Aug 25 — a fourth free track is worth ten minutes of checking.
 - Foxit's listed contact email on the sponsor page has a typo (`...foxitsoftware.come`). Use the developer portal if you need support.
 - Two eSign probe drafts (`35426242`, `35426627`) are sitting in the eSign dashboard, unsent — delete when convenient.

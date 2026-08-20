@@ -23,7 +23,7 @@
  * source — these tests do NOT call the live API.
  */
 
-import { PlanStore } from "../../safe-write-mcp-core/src/index.js";
+import { PlanStore, FileJournal } from "../../../safe-write-mcp-core/dist/index.js";
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -278,13 +278,14 @@ export async function sendDraftFolder(folderId) {
 
 /**
  * Create a PlanStore configured for the eSign adapter. The reconcile callback
- * checks the gateway folderStatus; fromJournal() uses it on restart to settle
- * any plan stuck in "executing".
+ * checks the gateway folderStatus; the core's restoreFromJournal() replays the
+ * journal on construction and restores any plan stuck in "executing".
  * @param {string} [journalPath]
  * @returns {PlanStore<EsignPayload>}
  */
 export function createEsignStore(journalPath) {
   initDurableStores(journalPath);
+  const journal = journalPath ? new FileJournal(journalPath) : undefined;
   return new PlanStore({
     planTtlMs: 5 * 60 * 1000, // 5 minutes — eSign sends should settle quickly
     audit: {
@@ -295,7 +296,7 @@ export function createEsignStore(journalPath) {
         return undefined;
       },
     },
-    journalPath,
+    journal,
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
       if (!folderId) {
@@ -318,21 +319,20 @@ export function createEsignStore(journalPath) {
  * journal, hydrates durable tokenToFolder and processedEvents stores, and
  * reconciles any stuck-executing plans.
  * @param {string} journalPath
- * @param {Partial<import("../../safe-write-mcp-core/src/index.js").PlanStoreOptions>} [options]
+ * @param {Partial<import("../../../safe-write-mcp-core/dist/index.js").PlanStoreOptions>} [options]
  * @returns {Promise<PlanStore<EsignPayload>>}
  */
 export async function loadEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
   // Preload tokenToFolder from the journal's stored extra.folderId before
   // reconciliation. If .token-map.json was lost, the journal is the
-  // authoritative source — without this, fromJournal()'s reconcile callback
-  // returns "unknown" for every recovered plan.
+  // authoritative source.
   preloadTokenMapFromJournal(journalPath);
-  // fromJournal is a static factory: it replays the journal, loads recovered
-  // executing plans into a new store, reconciles them, and returns it.
-  const store = await PlanStore.fromJournal(journalPath, {
+  // Create a store — the core replays the journal on construction and
+  // restores executing plans.
+  const store = new PlanStore({
     ...options,
-    journalPath,
+    journal: new FileJournal(journalPath),
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
       if (!folderId) {
@@ -405,7 +405,7 @@ function preloadTokenMapFromJournal(journalPath) {
  * execute the send later.
  * @param {PlanStore<EsignPayload>} store
  * @param {EsignPayload} payload
- * @param {Partial<import("../../safe-write-mcp-core/src/index.js").PlanCreateOptions>} [options]
+ * @param {Partial<import("../../../safe-write-mcp-core/dist/index.js").PlanCreateOptions>} [options]
  * @returns {Promise<{planToken: string, folderId: string} | {error: string, status?: number}>}
  */
 export async function createEsignFolder(store, payload, options = {}) {
@@ -469,17 +469,20 @@ export async function createEsignFolder(store, payload, options = {}) {
 /**
  * Begin the eSign send — transitions the plan to "executing". The host
  * calls sendDraftFolder() next, then confirms with confirmEsignExecuted() or
- * confirmEsignFailed().
+ * confirmFailed().
+ *
+ * The payload MUST be provided. After a crash, the core's journal replay
+ * cannot reconstruct the original payload (only the fingerprint), so the
+ * host must re-create it. The core's beginExecute() will reject a mismatched
+ * fingerprint.
  * @param {PlanStore<EsignPayload>} store
  * @param {string} planToken
+ * @param {EsignPayload} payload
  * @returns {{ok: true, planToken: string} | {ok: false, error: string, code?: string}}
  */
-export function beginEsignSend(store, planToken) {
-  const payload = store.listPending().find((p) => p.planToken === planToken)?.payload ?? store.listExecuting().find((p) => p.planToken === planToken)?.payload;
-
+export function beginEsignSend(store, planToken, payload) {
   if (!payload) {
-    // Reconstruct from the best-effort journal record if available
-    return { ok: false, error: "payload not found — store may need fromJournal()" };
+    return { ok: false, error: "payload is required for beginEsignSend" };
   }
 
   const result = store.beginExecute(planToken, payload);
