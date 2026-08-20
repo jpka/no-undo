@@ -24,6 +24,7 @@ import {
   operationDigest,
   describeTarget,
   createRedactionStore,
+  loadRedactionStore,
   createRedactionPlan,
   beginRedactionApply,
   confirmRedactionExecuted,
@@ -444,7 +445,132 @@ describe("createRedactionPlan cannot be talked out of the gate", () => {
   });
 });
 
-// --- Confirm helpers must not report success on failure ---------------------
+// --- The audit sink must not corrupt the MCP stream -------------------------
+
+describe("audit sink", () => {
+  test("both store constructors write audit events to stderr, not stdout", async () => {
+    // stdout carries the MCP JSON-RPC stream. An audit line there is a parse
+    // error at the client and the session is corrupted. Verified separately: a
+    // client reading stdout line-by-line fails on the audit line.
+    const j = tmpJournal();
+    const outLines = [];
+    const errLines = [];
+    const origOut = console.log;
+    const origErr = console.error;
+    console.log = (...a) => outLines.push(a.join(" "));
+    console.error = (...a) => errLines.push(a.join(" "));
+    try {
+      const store = createRedactionStore(j.path);
+      const staged = await stageRedactions(DOC, TARGETS);
+      createRedactionPlan(store, {
+        documentName: "d.pdf",
+        digest: staged.digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      });
+    } finally {
+      console.log = origOut;
+      console.error = origErr;
+      j.cleanup();
+    }
+    assert.deepEqual(
+      outLines.filter((l) => l.includes("redaction-audit")),
+      [],
+      "no audit line may reach stdout",
+    );
+    assert.ok(
+      errLines.some((l) => l.includes("redaction-audit")),
+      "audit events must actually be emitted, on stderr",
+    );
+  });
+
+  test("loadRedactionStore carries an audit sink", async () => {
+    // This is the constructor the production server uses. It previously passed no
+    // `audit` option at all, so the running server recorded nothing while the
+    // unused create path had a sink — an approval gate that does not record its
+    // decisions defeats the point.
+    const j = tmpJournal();
+    const errLines = [];
+    const origErr = console.error;
+    console.error = (...a) => errLines.push(a.join(" "));
+    try {
+      const store = await loadRedactionStore(j.path);
+      const staged = await stageRedactions(DOC, TARGETS);
+      createRedactionPlan(store, {
+        documentName: "d.pdf",
+        digest: staged.digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      });
+    } finally {
+      console.error = origErr;
+      j.cleanup();
+    }
+    assert.ok(
+      errLines.some((l) => l.includes("redaction-audit")),
+      "loadRedactionStore must emit audit events",
+    );
+  });
+
+  test("a caller can still override the audit sink", async () => {
+    const j = tmpJournal();
+    const seen = [];
+    try {
+      const store = await loadRedactionStore(j.path, {
+        audit: { record: (e) => void seen.push(e.status) },
+      });
+      const staged = await stageRedactions(DOC, TARGETS);
+      createRedactionPlan(store, {
+        documentName: "d.pdf",
+        digest: staged.digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      });
+    } finally {
+      j.cleanup();
+    }
+    assert.ok(seen.length > 0, "the supplied sink should receive events");
+  });
+});
+
+// --- Releasing a plan leaves it approved ------------------------------------
+
+describe("release semantics", () => {
+  test("a released plan can begin again without new approval", () => {
+    // Documenting the real behaviour rather than asserting a guarantee the core
+    // does not provide: confirmFailed returns a plan to retryable but does NOT
+    // revoke the approval, so one human decision authorizes every subsequent
+    // retry. That is why the MCP tool now demands a 4xx/5xx rejection status —
+    // the agent must not be able to release a plan whose outcome is unknown.
+    const j = tmpJournal();
+    try {
+      const store = createRedactionStore(j.path);
+      const digest = operationDigest(DOC, TARGETS);
+      const payload = {
+        documentName: "d.pdf",
+        digest,
+        targets: TARGETS,
+        stagedCount: 1,
+      };
+      const { planToken } = createRedactionPlan(store, payload);
+      store.approve(planToken);
+      assert.ok(beginRedactionApply(store, planToken, payload, digest).ok);
+      return confirmRedactionFailed(store, planToken, "HTTP 422").then((released) => {
+        assert.ok(released.ok);
+        const again = beginRedactionApply(store, planToken, payload, digest);
+        assert.equal(
+          again.ok,
+          true,
+          "the core keeps the approval across a release; the tool layer is what constrains this",
+        );
+        j.cleanup();
+      });
+    } catch (err) {
+      j.cleanup();
+      throw err;
+    }
+  });
+});
 
 describe("confirm helpers branch on ok alone", () => {
   /** A store stub whose confirms fail without attaching an error object. */

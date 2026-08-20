@@ -346,6 +346,32 @@ export async function applyRedactions(documentBytes, targets, options = {}) {
  */
 
 /**
+ * The audit sink, shared by both store constructors.
+ *
+ * Writes to **stderr**, not stdout. This module runs inside an MCP server whose
+ * stdout carries the JSON-RPC stream, so a `console.log` here interleaves a
+ * plain-text audit line with protocol frames and the client fails to parse it —
+ * verified: an MCP client reading stdout line-by-line hits a parse error on the
+ * audit line and the session is corrupted. Every diagnostic in this project goes
+ * to stderr for the same reason.
+ *
+ * Shared rather than duplicated because `loadRedactionStore` previously passed no
+ * `audit` option at all, and it is the constructor the production server actually
+ * uses — so the running server emitted no audit events whatsoever while the
+ * unused `createRedactionStore` path had a sink. An approval gate that does not
+ * record its decisions is the thing this project exists to prevent.
+ * @type {{record: (event: {status: string, planToken: string, tool: string}) => undefined}}
+ */
+const auditSink = {
+  record: (event) => {
+    console.error(
+      `[redaction-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
+    );
+    return undefined;
+  },
+};
+
+/**
  * Create a PlanStore for redaction applies.
  *
  * The `reconcile` hook returns "unknown" unconditionally, and that is the
@@ -363,14 +389,7 @@ export function createRedactionStore(journalPath) {
   return new PlanStore({
     planTtlMs: 5 * 60 * 1000,
     journalPath,
-    audit: {
-      record: (event) => {
-        console.log(
-          `[redaction-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
-        );
-        return undefined;
-      },
-    },
+    audit: auditSink,
     reconcile: async () => "unknown",
   });
 }
@@ -380,12 +399,17 @@ export function createRedactionStore(journalPath) {
  *
  * The core's constructor replays the journal, so any plan left mid-apply comes
  * back as `executing` and stays there — see the reconcile note above.
+ *
+ * Carries the same `audit` sink as `createRedactionStore`. Callers may override
+ * it through `options`, which is why the spread comes first.
  * @param {string} journalPath
  * @param {Partial<import("safe-write-mcp-core").PlanStoreOptions>} [options]
  * @returns {Promise<PlanStore<RedactionPayload>>}
  */
 export async function loadRedactionStore(journalPath, options = {}) {
   return await PlanStore.fromJournal(journalPath, {
+    planTtlMs: 5 * 60 * 1000,
+    audit: auditSink,
     ...options,
     journalPath,
     reconcile: async () => "unknown",

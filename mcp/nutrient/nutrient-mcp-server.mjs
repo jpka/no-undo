@@ -531,23 +531,66 @@ server.registerTool(
 server.registerTool(
   "nutrient_confirm_failed",
   {
-    title: "Release a plan after a known-failed apply",
+    title: "Release a plan after a provably-failed apply",
     description:
-      "Release a plan back to retryable. Only correct when you know the apply " +
-      "did not happen — releasing after a possible partial apply invites a " +
-      "second destructive run.",
+      "Release a plan back to retryable. Requires the /build HTTP status that " +
+      "proves the destructive call was rejected before it ran — a 4xx or 5xx " +
+      "response. Transport failures and timeouts are NOT accepted here, because " +
+      "the request may have been processed before the connection broke; those " +
+      "must be resolved by a human inspecting the document. Note that releasing " +
+      "a plan leaves it approved, so the retry does not need fresh approval.",
     inputSchema: {
       planToken: z.string(),
+      rejectedWithStatus: z
+        .number()
+        .int()
+        .min(400)
+        .max(599)
+        .describe(
+          "The HTTP status /build returned. Must be 4xx or 5xx: evidence that the " +
+            "apply was rejected rather than possibly-executed.",
+        ),
       reason: z.string().optional(),
     },
   },
-  async ({ planToken, reason }) => {
-    const r = await confirmRedactionFailed(getStore(), planToken, reason);
-    return {
-      isError: !r.ok,
-      content: [{ type: "text", text: JSON.stringify({ planToken, ...r }, null, 2) }],
-    };
-  },
+  async ({ planToken, rejectedWithStatus, reason }) =>
+    guarded(async () => {
+      // The gate weakness this closes: releasing a plan leaves it *approved*, so
+      // the same token can begin another apply with no new human decision. One
+      // approval therefore authorized unlimited retries. Verified before fixing:
+      // approve once, begin, release, begin again -> succeeded.
+      //
+      // Requiring a rejection status does not remove the retry, but it does mean
+      // the agent cannot release a plan whose outcome is unknown, which is the
+      // case where a retry would double-apply. Ambiguous failures stay executing
+      // and visible in nutrient_list_executing for a human.
+      const r = await confirmRedactionFailed(
+        getStore(),
+        planToken,
+        reason ? `HTTP ${rejectedWithStatus}: ${reason}` : `HTTP ${rejectedWithStatus}`,
+      );
+      return {
+        isError: !r.ok,
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                planToken,
+                ...r,
+                status: r.ok ? "retryable" : "executing",
+                note: r.ok
+                  ? "The plan is approved and retryable. A retry does NOT require new " +
+                    "human approval, so only retry the operation the human already saw."
+                  : undefined,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }),
 );
 
 server.registerTool(
