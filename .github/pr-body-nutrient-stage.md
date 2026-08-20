@@ -1,6 +1,6 @@
 ## What this is
 
-The build plan's **Aug 26–28 Nutrient stage**, landed six days early — unblocked by the Data Extraction key arriving in `.env`. Extraction routing, staged redaction, a Nutrient MCP server, and 53 new tests. **60/60 pass repo-wide.**
+The build plan's **Aug 26–28 Nutrient stage**, landed six days early — unblocked by the Data Extraction key arriving in `.env`. Extraction routing, staged redaction, a Nutrient MCP server, and 82 new tests. **89/89 pass repo-wide** (7 pre-existing eSign + 82 new).
 
 Full write-up: `docs/nutrient-stage-aug20.md`. Live transcripts committed under `docs/fixtures/`.
 
@@ -94,12 +94,13 @@ Also added an `npm test` script — `node --test test/` silently matched nothing
 
 ## Test plan
 
-- [x] `npm test` — 60/60 pass (7 eSign + 29 extraction + 24 redaction)
+- [x] `npm test` — 89/89 pass (7 eSign + 31 extraction + 31 redaction + 20 server/path)
 - [x] Extraction tests replay committed live fixtures; no live API calls
 - [x] Redaction tests mock `fetch`; the destructive path is never one misconfiguration from a real document
 - [x] MCP server boots, replays its journal, registers all 6 tools, binds the approval UI
 - [x] Stage-then-apply verified end to end against the live `/build` endpoint
 - [x] Fixtures contain only synthetic data from the generated test document
+- [x] Path traversal, in-root symlink escape, and self-clobber all rejected through the real MCP protocol
 
 ## Still open
 
