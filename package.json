@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Crash-safe agent approval gate for irreversible eSign sends",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
   "dependencies": {
     "@foxitsoftware/foxit-pdf-api-mcp-server": "1.1.2",
     "@modelcontextprotocol/sdk": "^1.12.0",
