@@ -200,19 +200,52 @@ describe("assertDistinct", () => {
 // --- Confirmed preset ids ----------------------------------------------------
 
 describe("CONFIRMED_PRESETS", () => {
-  test("contains only ids verified against the live API", () => {
-    // Probed Aug 20: each of these returned 200 from /build.
-    for (const p of ["email-address", "social-security-number", "credit-card-number"]) {
-      assert.ok(CONFIRMED_PRESETS.includes(p), `${p} should be listed`);
-    }
+  /**
+   * The exact set that returned HTTP 200 from /build on Aug 20, 2026.
+   *
+   * Compared as a whole set, not by spot-check: an unverified id added to the
+   * export would otherwise slip past a test that only asserts a few members are
+   * present. Extending the list is meant to require re-probing and updating this
+   * record in the same change.
+   */
+  const PROBED_VALID = [
+    "credit-card-number",
+    "date",
+    "email-address",
+    "international-phone-number",
+    "ipv4",
+    "ipv6",
+    "north-american-phone-number",
+    "social-security-number",
+    "time",
+    "url",
+    "vin",
+  ];
+
+  /** Spellings that returned HTTP 400 in the same probe run. */
+  const PROBED_REJECTED = [
+    "email",
+    "phone",
+    "ssn",
+    "email_addresses",
+    "emailAddress",
+    "phone-number",
+    "us-social-security-number",
+  ];
+
+  test("the exported set matches the probe record exactly", () => {
+    assert.deepEqual([...CONFIRMED_PRESETS].sort(), PROBED_VALID);
   });
 
-  test("excludes the plausible short forms the API rejects", () => {
-    // These all returned 400. Listing them would invite a silent failure: a
-    // preset that matches nothing stages zero regions and still returns a PDF,
-    // so the document looks processed and is not redacted.
-    for (const p of ["email", "phone", "ssn", "phone-number", "emailAddress"]) {
-      assert.ok(!CONFIRMED_PRESETS.includes(p), `${p} is rejected by the API and must not be listed`);
+  test("no id the API rejected appears in the list", () => {
+    // Listing one would invite a silent failure: a preset that matches nothing
+    // stages zero regions and still returns a valid PDF, so the document looks
+    // processed and is not redacted.
+    for (const p of PROBED_REJECTED) {
+      assert.ok(
+        !CONFIRMED_PRESETS.includes(p),
+        `${p} returned 400 from /build and must not be listed`,
+      );
     }
   });
 

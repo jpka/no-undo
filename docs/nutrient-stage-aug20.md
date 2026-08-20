@@ -8,7 +8,7 @@ three findings, across all three modes), the stage-then-apply redaction path, an
 the built-in PII preset identifiers. The committed transcripts are in
 `docs/fixtures/`.
 
-### Preset identifiers, probed against `/build`
+## Preset identifiers, probed against `/build`
 
 The naming is inconsistent enough that guessing fails, and failing quietly is the
 dangerous part: a preset that matches nothing stages zero regions and still
