@@ -252,6 +252,28 @@ describe("recovery evidence ledger", () => {
     record("tok", { status: 500, transportError: true });
     assert.equal(observed.get("tok").rejected, false);
   });
+
+  test("evidence older than the plan TTL is expired", () => {
+    // An expired observation describes a situation that no longer holds, so it
+    // must not authorize a release. Same reasoning as the staged-document TTL.
+    const { prune, ttlMs } = __observedFailuresForTest;
+    record("stale", { status: 422, transportError: false });
+    observed.get("stale").at = Date.now() - ttlMs - 1;
+    prune();
+    assert.equal(observed.has("stale"), false);
+  });
+
+  test("the ledger is capped, oldest-first", () => {
+    // Entries were previously deleted only on a successful release, so a
+    // repeatedly-failing apply grew the map without bound — the same leak already
+    // fixed in the staged-document cache.
+    const { prune, max } = __observedFailuresForTest;
+    for (let i = 0; i < max + 10; i++) record(`t${i}`, { status: 422, transportError: false });
+    prune();
+    assert.equal(observed.size, max);
+    assert.equal(observed.has("t0"), false, "oldest evidence evicted");
+    assert.equal(observed.has(`t${max + 9}`), true, "newest evidence retained");
+  });
 });
 
 describe("CONFIRMED_PRESETS", () => {

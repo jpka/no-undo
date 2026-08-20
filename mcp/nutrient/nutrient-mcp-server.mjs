@@ -216,6 +216,11 @@ export { safePath, DOCUMENT_ROOT, CANONICAL_ROOT, assertDistinct };
  * @type {Map<string, {rejected: boolean, status: number, transportError: boolean, at: number}>}
  */
 const observedFailures = new Map();
+const OBSERVED_MAX = 64;
+// Evidence expires with the plan it describes. A recorded rejection older than
+// the plan TTL cannot authorize anything useful, and keeping it would let a stale
+// observation justify a release long after the situation it described.
+const OBSERVED_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Record what /build actually returned for a plan's apply attempt.
@@ -232,12 +237,34 @@ function recordApplyFailure(planToken, outcome) {
     transportError: outcome.transportError,
     at: Date.now(),
   });
+  pruneObservedFailures();
+}
+
+/**
+ * Expire stale evidence and cap the ledger.
+ *
+ * Entries were previously removed only on a successful release, so a repeatedly
+ * failing apply grew the map without bound — the same leak already fixed in the
+ * staged-document cache. Expiring on the plan TTL also means recovery cannot rest
+ * on an observation older than the plan it belongs to.
+ * @param {number} [now]
+ */
+export function pruneObservedFailures(now = Date.now()) {
+  for (const [token, e] of observedFailures) {
+    if (now - e.at > OBSERVED_TTL_MS) observedFailures.delete(token);
+  }
+  while (observedFailures.size > OBSERVED_MAX) {
+    observedFailures.delete(observedFailures.keys().next().value);
+  }
 }
 
 /** Test seam for the recovery-evidence ledger. */
 export const __observedFailuresForTest = {
   map: observedFailures,
   record: recordApplyFailure,
+  prune: pruneObservedFailures,
+  max: OBSERVED_MAX,
+  ttlMs: OBSERVED_TTL_MS,
 };
 
 /**
@@ -598,6 +625,10 @@ server.registerTool(
       // that needed verifying, so a fabricated 422 released an approved plan for
       // another irreversible apply. The server made the call and already knows
       // the answer, so it consults its own record and ignores the caller's view.
+      //
+      // Pruned first so evidence older than the plan TTL cannot authorize a
+      // release: an expired observation describes a situation that no longer holds.
+      pruneObservedFailures();
       const observed = observedFailures.get(planToken);
 
       if (!observed) {
