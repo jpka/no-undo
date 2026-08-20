@@ -35,10 +35,11 @@ vendor catalogue.
 | `mcp/nutrient/nutrient-mcp-server.mjs` | Six MCP tools plus the in-process approval UI |
 | `mcp/nutrient/extract-probe.mjs` | Schema-extraction probe and per-mode calibration harness |
 | `mcp/nutrient/messy-pdf.mjs` | Shared messy-document generator, factored out of the Gate 0 probe |
-| `test/extraction-adapter.test.mjs` | 29 tests, fixture replay, no live calls |
-| `test/redaction-adapter.test.mjs` | 24 tests, mocked fetch, no live calls |
+| `test/extraction-adapter.test.mjs` | 32 tests, fixture replay, no live calls |
+| `test/redaction-adapter.test.mjs` | 30 tests, mocked fetch, no live calls |
+| `test/staged-cache.test.mjs` | 23 tests: cache bounds, path confinement, preset ids |
 
-60/60 tests pass across the repo (`npm test`).
+92/92 tests pass across the repo (`npm test`): 7 pre-existing eSign plus 85 new.
 
 ## Correction to the plan: the probe was pointed at the wrong endpoint
 
