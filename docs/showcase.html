@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>No Undo — Demo Showcase</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --amber: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 1.5rem; }
+
+  /* --- Hero --- */
+  .hero {
+    padding: 5rem 0 3rem;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+    background: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(88,166,255,0.08), transparent);
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    margin: 0 0 0.5rem;
+    letter-spacing: -0.02em;
+  }
+  .hero .tag {
+    font-size: 1.15rem;
+    color: var(--muted);
+    margin: 0 0 1.5rem;
+  }
+  .hero .badges {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-block;
+    padding: 0.3rem 0.8rem;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .badge.foxit { border-color: #2da04255; color: #3fb950; }
+  .badge.nutrient { border-color: #d2992255; color: #d29922; }
+  .badge.overall { border-color: #bc8cff55; color: #bc8cff; }
+
+  /* --- Sections --- */
+  section { padding: 3rem 0; border-bottom: 1px solid var(--border); }
+  section:last-child { border-bottom: none; }
+  h2 {
+    font-size: 1.6rem;
+    margin: 0 0 0.5rem;
+    letter-spacing: -0.01em;
+  }
+  h2 .num {
+    display: inline-block;
+    width: 2rem;
+    height: 2rem;
+    line-height: 2rem;
+    text-align: center;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 0.9rem;
+    margin-right: 0.5rem;
+    color: var(--accent);
+  }
+  h3 {
+    font-size: 1.1rem;
+    margin: 2rem 0 0.75rem;
+    color: var(--fg);
+  }
+  p { margin: 0.75rem 0; color: var(--muted); }
+  strong { color: var(--fg); }
+  a { color: var(--accent); }
+
+  /* --- Invoice viewer --- */
+  .invoice-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  .invoice-card .paper {
+    background: #f5f5f0;
+    color: #1a1a1a;
+    border-radius: 8px;
+    padding: 1.5rem;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    line-height: 1.5;
+  }
+  .invoice-card .paper .label { color: #666; font-size: 0.75rem; text-transform: uppercase; }
+  .invoice-card .paper .total {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin: 0.5rem 0;
+  }
+  .invoice-card .paper .total span { background: var(--red); color: white; padding: 0 0.3rem; border-radius: 4px; }
+
+  /* --- Split comparison --- */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    margin: 1.5rem 0;
+  }
+  @media (max-width: 720px) { .split { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+  }
+  .panel h4 {
+    margin: 0 0 0.75rem;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+  .panel pre {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .panel pre .kw { color: var(--accent); }
+  .panel pre .str { color: var(--green); }
+  .panel pre .num { color: var(--amber); }
+  .panel pre .bool { color: var(--red); }
+
+  /* --- Threshold table --- */
+  .thresh-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+  }
+  .thresh-table th, .thresh-table td {
+    padding: 0.6rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .thresh-table th {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .thresh-table td:nth-child(3) { text-align: center; }
+  .pass { color: var(--green); font-weight: 700; }
+  .fail { color: var(--red); font-weight: 700; }
+
+  /* --- Terminal --- */
+  .terminal {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 1.5rem 0;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+  }
+  .terminal .bar {
+    background: var(--surface);
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .terminal .bar .dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .terminal .bar .dot.r { background: var(--red); }
+  .terminal .bar .dot.y { background: var(--amber); }
+  .terminal .bar .dot.g { background: var(--green); }
+  .terminal .bar .title { margin-left: 0.75rem; color: var(--muted); }
+  .terminal .body {
+    padding: 1rem 1.25rem;
+    min-height: 200px;
+    line-height: 1.7;
+  }
+  .terminal .line { display: block; white-space: pre-wrap; }
+  .terminal .line.prompt { color: var(--green); }
+  .terminal .line.info { color: var(--accent); }
+  .terminal .line.warn { color: var(--amber); }
+  .terminal .line.error { color: var(--red); }
+  .terminal .line.dim { color: var(--muted); }
+  .terminal .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1.1em;
+    background: var(--fg);
+    vertical-align: text-bottom;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* --- Audit log --- */
+  .audit-log {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    margin: 1.5rem 0;
+  }
+  .audit-log .entry {
+    padding: 0.4rem 0;
+    border-bottom: 1px dashed var(--border);
+    display: flex;
+    gap: 1rem;
+    align-items: baseline;
+  }
+  .audit-log .entry:last-child { border-bottom: none; }
+  .audit-log .entry .ts { color: var(--muted); min-width: 5rem; }
+  .audit-log .entry .ev { min-width: 6rem; font-weight: 600; }
+  .audit-log .entry .ev.created { color: var(--accent); }
+  .audit-log .entry .ev.approved { color: var(--green); }
+  .audit-log .entry .ev.executing { color: var(--amber); }
+  .audit-log .entry .ev.reconciled { color: var(--red); }
+  .audit-log .entry .ev.executed { color: var(--purple); }
+  .audit-log .entry .hash { color: var(--muted); font-size: 0.75rem; }
+
+  /* --- Architecture diagram --- */
+  .arch {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    margin: 2rem 0;
+    flex-wrap: wrap;
+  }
+  .arch .box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.5rem;
+    text-align: center;
+    min-width: 140px;
+  }
+  .arch .box .name { font-weight: 600; font-size: 0.95rem; }
+  .arch .box .role { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+  .arch .box.gate { border-color: var(--accent); box-shadow: 0 0 20px rgba(88,166,255,0.15); }
+  .arch .arrow { color: var(--muted); font-size: 1.5rem; }
+
+  /* --- Footer --- */
+  footer {
+    padding: 3rem 0;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  footer a { text-decoration: none; }
+  footer .links { display: flex; gap: 1.5rem; justify-content: center; margin-bottom: 1rem; }
+
+  /* --- Animations --- */
+  .fade-in {
+    opacity: 0;
+    transform: translateY(10px);
+    animation: fadeIn 0.6s ease forwards;
+  }
+  @keyframes fadeIn {
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .delay-1 { animation-delay: 0.2s; }
+  .delay-2 { animation-delay: 0.4s; }
+  .delay-3 { animation-delay: 0.6s; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="wrap">
+    <h1>No Undo</h1>
+    <p class="tag">An agent approval gate that catches confidently wrong APIs — and survives a crash without double-sending.</p>
+    <div class="badges">
+      <span class="badge foxit">Foxit eSign</span>
+      <span class="badge nutrient">Nutrient DWS</span>
+      <span class="badge overall">Overall</span>
+      <span class="badge">DevNetwork Hackathon 2026</span>
+    </div>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <h2><span class="num">1</span>The gate catches a lie the API tells confidently</h2>
+    <p>Ninety-seven percent confidence. Ninety-five percent grounding. The two signals a reasonable integrator would threshold on said auto-approve. The number was wrong. This is a live transcript from the first production extraction call — not a synthetic test.</p>
+
+    <div class="invoice-card">
+      <div class="paper">
+        <div class="label">Kaniefsky Transport LLC — Invoice INV-2026-0418</div>
+        <div>ACME Freight Services</div>
+        <div style="margin-top: 1rem;">Parcel 1 ...... 2 × $14.50</div>
+        <div>Parcel 2 ...... 1 × $39.99</div>
+        <div>Handling ...... 3 × $4.00</div>
+        <div class="total">Total due: <span>$86.86</span></div>
+        <div>Tax: $5.87</div>
+      </div>
+    </div>
+
+    <h3>Nutrient understand mode output (live, Aug 20 2026)</h3>
+    <div class="split">
+      <div class="panel">
+        <h4>Returned value</h4>
+        <pre><span class="str">"total_amount"</span>: <span class="num">26.86</span>,
+<span class="str">"match"</span>: <span class="str">"id_match"</span>,
+<span class="str">"confidence"</span>: <span class="num">0.970</span>,
+<span class="str">"groundingScore"</span>: <span class="num">0.95</span>,
+<span class="str">"recognitionScore"</span>: <span class="num">0.678</span></pre>
+      </div>
+      <div class="panel">
+        <h4>Actual document value</h4>
+        <pre><span class="str">"total_amount"</span>: <span class="num" style="color:var(--red);font-size:1.2rem;font-weight:700;">$86.86</span>
+
+<span class="dim">  ← Nutrient returned $26.86
+  with 97% confidence.</span></pre>
+      </div>
+    </div>
+
+    <h3>Routing decision</h3>
+    <table class="thresh-table">
+      <thead>
+        <tr><th>Signal</th><th>Value</th><th>Threshold</th><th>Verdict</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>confidence</td><td>0.970</td><td>≥ 0.90</td><td class="pass">✅ pass</td></tr>
+        <tr><td>groundingScore</td><td>0.95</td><td>≥ 0.90</td><td class="pass">✅ pass</td></tr>
+        <tr><td>recognitionScore</td><td>0.678</td><td>≥ 0.80</td><td class="fail">❌ <strong>FAIL</strong></td></tr>
+      </tbody>
+    </table>
+
+    <p><strong style="color:var(--red);">Gate verdict: HUMAN REVIEW REQUIRED.</strong> Recognition score is the only signal measuring whether the glyphs were read correctly — not whether the value came from the right region of the page. It was the only one that dissented. The agent was not permitted to sign with the wrong total.</p>
+
+    <h3>The second finding: agentic mode</h3>
+    <p>The same invoice in agentic mode — double the cost, VLM-augmented — returned the correct totals (<strong>$86.86</strong>, tax <strong>$5.87</strong>) but silently mangled the line-item table: "Parcel 1" became description "Parcel" with quantity 1. And agentic mode emits <strong>no recognitionScore at all</strong>. Paying more bought better answers and less ability to tell whether they were right.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="num">2</span>Crash at the worst possible moment — recover without double-sending</h2>
+    <p>The plan is approved. The agent transitions to "executing." The gateway send-draft call fires. And right now — the process dies. This is what the crash-safe lifecycle was built for.</p>
+
+    <div class="terminal">
+      <div class="bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">agent@no-undo: ~/no-undo</span>
+      </div>
+      <div class="body" id="term-body">
+        <span class="line prompt">$ node agent/esign-agent-loop.mjs</span>
+        <span class="line info">[agent] Starting eSign send pipeline...</span>
+        <span class="line info">[agent] Creating draft folder...</span>
+        <span class="line info">[agent] Draft created: folderId=fld_abc123, planToken=pln_7f3a...</span>
+        <span class="line dim">[agent] Plan awaiting approval.</span>
+        <span class="line warn">[agent] Human approved plan pln_7f3a (actor: jpka)</span>
+        <span class="line info">[agent] Plan approved. Transitioning to executing...</span>
+        <span class="line info">[agent] Calling gateway send-draft endpoint...</span>
+        <span class="line error">[FATAL] Process killed (SIGKILL) — mid-send</span>
+      </div>
+    </div>
+
+    <p>The journal recorded <code>executing</code> before the process died. The actual gateway call may or may not have completed — the agent will never know. The dangerous window straddles the call, and the core does not model "maybe sent."</p>
+
+    <h3>On restart: reconcile against ground truth</h3>
+    <div class="terminal">
+      <div class="bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="title">agent@no-undo: ~/no-undo (restart)</span>
+      </div>
+      <div class="body">
+        <span class="line prompt">$ node agent/esign-agent-loop.mjs</span>
+        <span class="line info">[agent] Replaying journal...</span>
+        <span class="line warn">[agent] Found 1 plan stuck in 'executing': pln_7f3a</span>
+        <span class="line info">[agent] Reconciling against gateway folderStatus...</span>
+        <span class="line info">[agent] Gateway response: fld_abc123 → status: DRAFT</span>
+        <span class="line info">[agent] DRAFT → send did not happen. Plan released for retry.</span>
+        <span class="line info">[agent] Audit log: no false 'executed' entry written.</span>
+        <span class="line prompt">&nbsp;</span>
+      </div>
+    </div>
+
+    <h3>Hash-chained audit trail</h3>
+    <p>Every transition is an append-only, fsync'd record. Each line carries the hash of the previous one — tampering is detectable, and replaying the journal on restart reconstructs exactly the state the system was in when it died.</p>
+    <div class="audit-log">
+      <div class="entry"><span class="ts">19:54:29</span><span class="ev created">plan_created</span><span class="hash">prevHash: 0000…0000</span></div>
+      <div class="entry"><span class="ts">19:54:31</span><span class="ev approved">approved</span><span class="dim">actor: jpka</span><span class="hash">prevHash: a1b2…c3d4</span></div>
+      <div class="entry"><span class="ts">19:54:33</span><span class="ev executing">executing</span><span class="hash">prevHash: c3d4…e5f6</span></div>
+      <div class="entry"><span class="ts">19:55:02</span><span class="ev reconciled">reconciled_draft</span><span class="dim">gateway: DRAFT</span><span class="hash">prevHash: e5f6…a7b8</span></div>
+    </div>
+    <p style="font-size: 0.85rem;">If the gateway had returned SHARED, the fourth line would be <code>executed</code> — and the audit log would be equally honest about the send that did happen. The log never lies, and it never double-sends.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Architecture</h2>
+    <p>Nutrient DWS for extraction with per-field confidence routing. Foxit PDF Services for reversible document work. Foxit eSign behind a crash-safe approval gate. Reversible steps run unattended. The irreversible step — sending for signature — stops at a human approval checkpoint that survives a crash without double-sending. The gate doesn't trust the API's confidence; it trusts the signal that actually measures what matters.</p>
+
+    <div class="arch">
+      <div class="box">
+        <div class="name">Nutrient DWS</div>
+        <div class="role">Extraction · recognition floor</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box">
+        <div class="name">Foxit PDF</div>
+        <div class="role">Assembly · OCR · Merge</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box gate">
+        <div class="name">Approval</div>
+        <div class="role">crash-safe two-step send</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="box">
+        <div class="name">Foxit eSign</div>
+        <div class="role">Send for signature</div>
+      </div>
+    </div>
+
+    <h3>Why this can win Overall</h3>
+    <p>Agents are being handed write access to systems where actions cannot be undone. The industry's answer is a confirmation prompt showing what the agent thinks it's doing. This project shows what happens when the agent is confidently wrong — and what happens when the process dies at the worst possible moment. The core is published on npm. The servers are shipped. This is not hypothetical.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/jpka/no-undo">github.com/jpka/no-undo</a>
+      <a href="https://github.com/jpka/safe-write-mcp-core">safe-write-mcp-core (npm)</a>
+    </div>
+    <p>No Undo · DevNetwork Hackathon 2026 · Built by <a href="https://github.com/jpka">jpka</a></p>
+  </div>
+</footer>
+
+<script>
+  // Subtle terminal cursor blink — purely decorative
+  const termBody = document.getElementById('term-body');
+  if (termBody && !termBody.querySelector('.cursor')) {
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    termBody.appendChild(cursor);
+  }
+</script>
+</body>
+</html>
