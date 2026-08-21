@@ -321,7 +321,7 @@
 <section>
   <div class="wrap">
     <h2><span class="num">1</span>The gate catches a lie the API tells confidently</h2>
-    <p>Ninety-seven percent confidence. Ninety-five percent grounding. Every signal a reasonable integrator would threshold on said <em>auto-approve</em>. The number was wrong. This is a live transcript from the first production extraction call — not a synthetic test.</p>
+    <p>Ninety-seven percent confidence. Ninety-five percent grounding. The two signals a reasonable integrator would threshold on said auto-approve. The number was wrong. This is a live transcript from the first production extraction call — not a synthetic test.</p>
 
     <div class="invoice-card">
       <div class="paper">
@@ -431,17 +431,12 @@
 <section>
   <div class="wrap">
     <h2>Architecture</h2>
-    <p>Three vendors, one gate. Reversible steps run unattended. The irreversible step — sending for signature — stops at a human approval checkpoint that survives a crash without double-sending. The gate doesn't trust the API's confidence; it trusts the signal that actually measures what matters.</p>
+    <p>Nutrient DWS for extraction with per-field confidence routing. Foxit PDF Services for reversible document work. Foxit eSign behind a crash-safe approval gate. Reversible steps run unattended. The irreversible step — sending for signature — stops at a human approval checkpoint that survives a crash without double-sending. The gate doesn't trust the API's confidence; it trusts the signal that actually measures what matters.</p>
 
     <div class="arch">
       <div class="box">
         <div class="name">Nutrient DWS</div>
-        <div class="role">Extraction + routing</div>
-      </div>
-      <div class="arrow">→</div>
-      <div class="box gate">
-        <div class="name">The Gate</div>
-        <div class="role">per-field recognition floor</div>
+        <div class="role">Extraction · recognition floor</div>
       </div>
       <div class="arrow">→</div>
       <div class="box">

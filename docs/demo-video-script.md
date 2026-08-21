@@ -37,7 +37,7 @@ DevNetwork Hackathon 2026
 }
 ```
 
-**VO:** "Nutrient returns twenty-six dollars and eighty-six cents. Ninety-seven percent confidence. Ninety-five percent grounding. Every signal a reasonable integrator would threshold on says auto-approve."
+**VO:** "Nutrient returns twenty-six dollars and eighty-six cents. Ninety-seven percent confidence. Ninety-five percent grounding. The two signals a reasonable integrator would threshold on said auto-approve."
 
 **Visual:** Highlight the `recognitionScore: 0.678` in amber. Show a threshold table:
 
@@ -121,9 +121,9 @@ DevNetwork Hackathon 2026
 
 ## Closing (2:40–3:00)
 
-**Visual:** Architecture diagram — three boxes: Foxit PDF (reversible), Nutrient DWS (extraction + gate), Foxit eSign (irreversible, gated). Arrows showing the pipeline.
+**Visual:** Architecture diagram — four boxes in pipeline order: Nutrient DWS (extraction + recognition floor), Foxit PDF (reversible document work), Approval (crash-safe two-step send), Foxit eSign (irreversible send). Arrows between each.
 
-**VO:** "Three vendors, one gate. Foxit PDF Services for reversible document work. Nutrient for extraction with per-field confidence routing. Foxit eSign behind a crash-safe approval gate. The gate doesn't trust the API's confidence — it trusts the signal that measures what actually matters. And if the process dies at the worst possible moment, it recovers without lying and without double-sending."
+**VO:** "Three vendors, one gate. Nutrient for extraction with per-field confidence routing. Foxit PDF Services for reversible document work. Foxit eSign behind a crash-safe approval gate. The gate doesn't trust the API's confidence — it trusts the signal that measures what actually matters. And if the process dies at the worst possible moment, it recovers without lying and without double-sending."
 
 **Visual:** Final card:
 
