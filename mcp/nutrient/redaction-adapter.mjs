@@ -42,6 +42,11 @@
 
 import { PlanStore } from "safe-write-mcp-core";
 import { createHash } from "node:crypto";
+import {
+  compositeSink,
+  createJsonlAuditSink,
+  defaultAuditPath,
+} from "../lib/jsonl-audit-sink.mjs";
 
 const BUILD_URL = process.env.NUTRIENT_BUILD_URL ?? "https://api.nutrient.io/build";
 
@@ -360,16 +365,26 @@ export async function applyRedactions(documentBytes, targets, options = {}) {
  * uses — so the running server emitted no audit events whatsoever while the
  * unused `createRedactionStore` path had a sink. An approval gate that does not
  * record its decisions is the thing this project exists to prevent.
- * @type {{record: (event: {status: string, planToken: string, tool: string}) => undefined}}
+ *
+ * Now two channels: this stderr line a human watches, plus the same
+ * hash-chained JSONL file the eSign stage writes (default
+ * `<journalDir>/redaction-audit.jsonl`, overridable via `auditPath` option or
+ * `NO_UNDO_REDACTION_AUDIT_PATH`) — see mcp/lib/jsonl-audit-sink.mjs.
+ *
+ * @param {string | null} auditPath  null keeps console-only auditing
  */
-const auditSink = {
-  record: (event) => {
-    console.error(
-      `[redaction-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
-    );
-    return undefined;
-  },
-};
+function makeRedactionAuditSink(auditPath) {
+  const consoleSink = {
+    record: (event) => {
+      console.error(
+        `[redaction-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
+      );
+      return undefined;
+    },
+  };
+  if (!auditPath) return consoleSink;
+  return compositeSink(consoleSink, createJsonlAuditSink(auditPath));
+}
 
 /**
  * Create a PlanStore for redaction applies.
@@ -383,13 +398,19 @@ const auditSink = {
  * the plan stays in `executing`, `listExecutingRedactions()` surfaces it, and a
  * human resolves it. The audit log only ever says what is known.
  * @param {string} journalPath
+ * @param {{auditPath?: string | null}} [options]
  * @returns {PlanStore<RedactionPayload>}
  */
-export function createRedactionStore(journalPath) {
+export function createRedactionStore(journalPath, options = {}) {
+  const auditPath = defaultAuditPath(
+    journalPath,
+    "redaction",
+    "auditPath" in options ? options.auditPath : process.env.NO_UNDO_REDACTION_AUDIT_PATH,
+  );
   return new PlanStore({
     planTtlMs: 5 * 60 * 1000,
     journalPath,
-    audit: auditSink,
+    audit: makeRedactionAuditSink(auditPath),
     reconcile: async () => "unknown",
   });
 }
@@ -407,9 +428,14 @@ export function createRedactionStore(journalPath) {
  * @returns {Promise<PlanStore<RedactionPayload>>}
  */
 export async function loadRedactionStore(journalPath, options = {}) {
+  const auditPath = defaultAuditPath(
+    journalPath,
+    "redaction",
+    "auditPath" in options ? options.auditPath : process.env.NO_UNDO_REDACTION_AUDIT_PATH,
+  );
   return await PlanStore.fromJournal(journalPath, {
     planTtlMs: 5 * 60 * 1000,
-    audit: auditSink,
+    audit: makeRedactionAuditSink(auditPath),
     ...options,
     journalPath,
     reconcile: async () => "unknown",

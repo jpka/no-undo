@@ -465,15 +465,16 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
     <p class="dim" style="font-size:0.85rem;">The reconciliation callback and the three-way branch are implemented in <code>mcp/foxit/esign-adapter.mjs</code> and unit-tested against the Gate&nbsp;0 fixtures. A recorded end-to-end crash-and-recover run is the demo video's job — see Known gaps for what is not yet exercised live.</p>
 
     <!--
-      PENDING (P1, P2, P3, P4): a captured terminal transcript of the crash and recovery,
-      and the hash-chained JSONL audit trail.
-      Do not restore either until:
+      PENDING (P1, P4): a captured terminal transcript of the crash and recovery.
+      Do not restore until:
         P1 - agent/esign-agent-loop.mjs actually drives approve -> execute -> crash -> reconcile
-        P2 - a JSONL audit sink with prevHash exists (core currently ships a NoopSink;
-             the host sinks only print one line to stderr, and no audit file is written)
-        P3 - deterministic crash injection lands, so the run is reproducible
         P4 - one real send produces the first observed folderStatus: SHARED
-      When restoring, capture real output with asciinema/script. Use the real journal
+      The hash-chained JSONL audit trail itself has shipped (P2 done): both stages
+      append to <journalDir>/{esign,redaction}-audit.jsonl via
+      mcp/lib/jsonl-audit-sink.mjs, and P3 deterministic crash injection
+      (NO_UNDO_CRASH_AFTER_FSYNC) landed with it. What is still missing is the
+      recorded end-to-end run. When restoring, capture real output with
+      asciinema/script. Use the real journal
       statuses - previewed | awaiting_approval | approved | rejected | executing |
       executed | failed - with fields planToken/status. There is no plan_created,
       no reconciled_draft, and no actor field. The DRAFT branch journals
@@ -566,7 +567,8 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <li><strong><code>safe-write-mcp-core@0.3.0</code> is published on npm</strong> and consumed here by version — not vendored, not a fork.</li>
       <li><strong>Three upstream issues filed against our own core</strong> (#18, #19, #20) rather than patched around downstream, so the other two servers on the same kernel inherit the fixes.</li>
       <li><strong>The crash-safety redesign shipped</strong> — <code>consume()</code> split into <code>beginExecute()</code> / <code>confirmExecuted()</code> / <code>confirmFailed()</code>, with a durable streamed-replay journal.</li>
-      <li><strong>104 tests pass locally</strong> across the eSign adapter, extraction routing, redaction, and the staged cache. CI currently runs a subset — see Known gaps.</li>
+      <li><strong>The audit trail is a hash-chained JSONL file.</strong> Every lifecycle event from both irreversible stages is appended with <code>prevHash</code> + sha256, fsync'd per line, and re-verified by streaming — tamper a record and verification names the line. Crash debris (a torn final write) is truncated on recovery, never chained over.</li>
+      <li><strong><span id="test-count">114</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
       <li><strong>Every live finding is committed as a fixture</strong>, including the failures and the wrong-endpoint probe that preceded the right one.</li>
     </ul>
   </div>
@@ -581,7 +583,6 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <li><strong>The approval server has no shared secret.</strong> It binds loopback and checks <code>Host</code> / <code>Origin</code> / <code>Sec-Fetch-Site</code>, which defends against a malicious web page but not against a hostile local process. Filed upstream as core issue #20 with a proposed per-session bearer token; fixing it downstream would leave the other two servers exposed.</li>
       <li><strong>Redaction cannot be reconciled at all.</strong> The build endpoint is one synchronous request with no job ID and no server-side state, so <code>reconcile</code> returns <code>unknown</code> honestly and a plan interrupted mid-apply stays visibly stuck for a human.</li>
       <li><strong>No eSign send has been performed end to end yet.</strong> Gate 0 proved entitlement and confirmed the send route exists; <code>folderStatus: SHARED</code> has not yet been observed live.</li>
-      <li><strong>CI runs one of four test files.</strong> The full suite passes locally; the workflow needs the glob.</li>
       <li><strong>The redaction byte-check has no committed artifact.</strong> It was verified live and written up, but those unit tests mock the transport.</li>
       <li><strong>Two Foxit pipeline stages are design, not code.</strong> See the architecture note above.</li>
     </ul>
