@@ -1,7 +1,7 @@
 ## Summary
 
 - Bumps `safe-write-mcp-core` from `0.2.0` to `0.3.0` to consume the fix for the `GET /api/plans` raw-payload leak ([`safe-write-mcp-core#18`](https://github.com/jpka/safe-write-mcp-core/issues/18), closed by [`safe-write-mcp-core#19`](https://github.com/jpka/safe-write-mcp-core/pull/19)).
-- v0.3.0 drops the raw `payload` field from `GET /api/plans` by default — opt-in via `exposeRawPayload`. This was an Aug 29–30 audit/UI task that was filed in the wrong repo; it's a core response-shape leak, not a local one.
+- v0.3.0 drops the raw `payload` field from `GET /api/plans` by default — opt-in via `exposeRawPayload`. This was an Aug 29–30 (2026) audit/UI task that was filed in the wrong repo; it's a core response-shape leak, not a local one.
 - Updates `build-plan.md`: marks the leak fix as DONE, refreshes the status line, and replaces the outdated Aug 20 correction note with a pointer to the published package.
 
 ## Why this matters

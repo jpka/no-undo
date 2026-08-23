@@ -370,7 +370,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       </table>
     </div>
 
-    <p><strong style="color:var(--red);">Gate verdict: human review required.</strong> The agent was not permitted to send a document for signature carrying a total it could not verify had been read correctly.</p>
+    <p><strong style="color:var(--red);">Router verdict: human review of this extraction.</strong> The extraction result — including the wrong total — is not allowed to flow onward unattended; a person has to look at it. What a human review of the extraction does <em>not</em> yet do is gate anything downstream: today, applying redactions is separately gated behind its own approval (<code>alwaysRequireApproval: true</code>), and routing an extracted document into an eSign send through one enforced pipeline is <span class="pill">planned</span> (prerequisite P6 in the shooting spec) — not shipped enforcement.</p>
 
     <div class="note warn">
       <span class="h">What that costs — stated up front</span>
@@ -392,7 +392,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 <section>
   <div class="wrap">
     <h2><span class="num">4</span>The document that looks redacted and isn't<span class="pill shipped">shipped</span></h2>
-    <p>Same gate, a second irreversible action. Staging redactions with <code>createRedactions</code> is reversible and runs unattended. <code>applyRedactions</code> destroys content permanently, so it sits behind <code>alwaysRequireApproval: true</code> — the same approval queue as the signature send.</p>
+    <p>Same gate, a second irreversible action. Staging redactions with <code>createRedactions</code> is reversible and runs unattended. <code>applyRedactions</code> destroys content permanently, so it sits behind <code>alwaysRequireApproval: true</code> — approval-gated in its own right, by the same mechanism the eSign stage uses for the send. (One shared approval queue spanning extraction → redaction → eSign is the design; wiring them together is planned work — P6.)</p>
 
     <p><strong>Searching the raw bytes is not a sufficient check.</strong> Nutrient re-compresses the content stream, so the PII string is absent from all three files — the naive verification passes on a document that is still dangerous. Decompressing every <code>FlateDecode</code> stream shows what is actually there:</p>
 
