@@ -16,4 +16,4 @@ jobs:
           node-version: ">=18"
           cache: "npm"
       - run: npm ci
-      - run: node --test test/esign-adapter.test.mjs
+      - run: npm test

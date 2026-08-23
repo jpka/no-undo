@@ -21,13 +21,13 @@
 |---|---|---|---|
 | P0 | **Make `jpka/no-undo` public.** `gh repo view` reports `isPrivate: true`; anonymous fetch 404s. | Final card, footer link | ☐ |
 | P1 | Fix `agent/esign-agent-loop.mjs`. It is a stub: line 99 resolves the server to `agent/esign-mcp-server.mjs` (real path `mcp/foxit/esign-mcp-server.mjs`), it imports `startApprovalServer` and never calls it, and it returns `awaiting_approval` without ever executing, crashing, or reconciling. | All of Story 2 | ☐ |
-| P2 | JSONL audit sink with `prevHash`. There is **no audit sink at all** — core ships a `NoopSink` and the host sinks print one line to stderr. | Audit-trail beat | ☐ |
-| P3 | Deterministic crash injection — an env flag that exits immediately after `beginExecute` fsyncs. Hand-timed `kill -9` is not reproducible. | The money shot | ☐ |
+| P2 | JSONL audit sink with `prevHash`. There is **no audit sink at all** — core ships a `NoopSink` and the host sinks print one line to stderr. | Audit-trail beat | ✅ **DONE** — `mcp/lib/jsonl-audit-sink.mjs`: both stages append fsync'd, hash-chained records beside their journals (`{journalDir}/{esign,redaction}-audit.jsonl`); `verifyAuditChain()` streams and names the tampered line; torn tails are truncated on recovery. Tested in `test/audit-sink.test.mjs`. Safe to screen-record: events carry no payloads. |
+| P3 | Deterministic crash injection — an env flag that exits immediately after `beginExecute` fsyncs. Hand-timed `kill -9` is not reproducible. | The money shot | ✅ **DONE** — `NO_UNDO_CRASH_AFTER_FSYNC=1` (or an exact plan token) SIGKILLs inside `beginEsignSend` between the journal fsync and the gateway call (`maybeCrashAfterFsync`, `mcp/foxit/esign-adapter.mjs`). Spawn-tested; Branch A/B recording = set flag, run, restart. |
 | P4 | One real send to your own address, producing the missing `SHARED` fixture. No send has ever succeeded; `folderStatus: SHARED` has never been observed. | Exactly-once branch | ☐ |
 | P5 | Wire one real Foxit PDF merge into draft creation. Today the eSign path uses a hardcoded base64 stub — `esign-adapter.mjs:391`: `// In production this would come from the Foxit MCP's assembly tools.` | Architecture claim | ☐ |
 | P6 | Chain Nutrient → eSign onto one PlanStore. They are currently independent servers with independent stores. | Cold open | ☐ |
 | P7 | Capture a real staged-vs-applied redaction artifact. The byte-size table in `docs/nutrient-stage-aug20.md` has no committed fixture; those tests mock `fetch`. | Redaction beat | ☐ |
-| P8 | Fix `.github/workflows/ci.yml` — it runs 1 of 4 test files, so the full suite is a local claim. | Test-count claim | ☐ |
+| P8 | Fix `.github/workflows/ci.yml` — it runs 1 of 4 test files, so the full suite is a local claim. | Test-count claim | ✅ **DONE** — CI now runs `npm test` (the full glob; 5 files, 114 tests). |
 | P9 | Pull and commit the **actual** hackathon rules. The repo contains no rules, no Devpost URL, no rubric, no stated video limit. Every runtime number in this repo is self-imposed. | Runtime target | ☐ |
 
 **Recording logistics:** the approval UI has **no fixed port**. `approvalServer.js` uses
@@ -248,16 +248,20 @@ other way puts a lie in the audit log."
 
 ## Audit, architecture, gaps (3:15–3:40)
 
-*Audit-log visual needs P2.*
+*P2 done — the visual is now the **audit** file, not the journal:*
+`<journalDir>/esign-audit.jsonl`, produced by `mcp/lib/jsonl-audit-sink.mjs`. It carries the
+same statuses as the journal plus `tool`, `reason`, and the chain fields (`prevHash`, `hash`),
+and unlike the journal it carries no payload, so it can go on camera. Record it after a
+crash-and-recover run so the chain shows the whole story.
 
-**Visual:** The journal, using the **real** status names.
+**Visual:** The audit file, using the **real** status names.
 
 ```jsonl
-{"ts":"…","planToken":"pln_7f3a…","status":"previewed"}
-{"ts":"…","planToken":"pln_7f3a…","status":"awaiting_approval"}
-{"ts":"…","planToken":"pln_7f3a…","status":"approved"}
-{"ts":"…","planToken":"pln_7f3a…","status":"executing"}
-{"ts":"…","planToken":"pln_7f3a…","status":"failed","detail":"EXECUTION_FAILED"}
+{"ts":"…","planToken":"pln_7f3a…","status":"previewed","prevHash":"000…","hash":"9f2c…"}
+{"ts":"…","planToken":"pln_7f3a…","status":"awaiting_approval","prevHash":"9f2c…","hash":"41ab…"}
+{"ts":"…","planToken":"pln_7f3a…","status":"approved","prevHash":"41ab…","hash":"c07d…"}
+{"ts":"…","planToken":"pln_7f3a…","status":"executing","prevHash":"c07d…","hash":"1e93…"}
+{"ts":"…","planToken":"pln_7f3a…","status":"failed","detail":"EXECUTION_FAILED","prevHash":"1e93…","hash":"5b20…"}
 ```
 
 > The statuses are fixed by the core: `previewed | awaiting_approval | approved | rejected |

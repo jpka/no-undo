@@ -26,6 +26,11 @@
 import { PlanStore } from "safe-write-mcp-core";
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+  compositeSink,
+  createJsonlAuditSink,
+  defaultAuditPath,
+} from "../lib/jsonl-audit-sink.mjs";
 
 const GATEWAY = process.env.FOXIT_ESIGN_HOST ?? "https://na1.fusion.foxit.com";
 const LEGACY = process.env.FOXIT_ESIGN_LEGACY_HOST ?? "https://na1.foxitesign.foxit.com";
@@ -276,24 +281,56 @@ export async function sendDraftFolder(folderId) {
 // --- Plan store with reconcile ----------------------------------------------
 
 /**
+ * The audit sink, shared by both store constructors.
+ *
+ * Two channels: a stderr console line a human watches in the terminal, and a
+ * hash-chained append-only JSONL file beside the journal (prevHash + sha256
+ * per record — see mcp/lib/jsonl-audit-sink.mjs).
+ *
+ * stderr, NOT stdout: this module runs inside an MCP server whose stdout
+ * carries the JSON-RPC stream. The previous sink used console.log here — an
+ * interleaved plain-text line that an MCP client reading stdout line-by-line
+ * hits as a parse error, corrupting the session. Every diagnostic in this
+ * project goes to stderr for the same reason.
+ *
+ * @param {string | null} auditPath  null keeps console-only auditing
+ */
+function makeEsignAuditSink(auditPath) {
+  const consoleSink = {
+    record: (event) => {
+      console.error(
+        `[esign-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
+      );
+      return undefined;
+    },
+  };
+  if (!auditPath) return consoleSink;
+  return compositeSink(consoleSink, createJsonlAuditSink(auditPath));
+}
+
+/**
  * Create a PlanStore configured for the eSign adapter. The reconcile callback
  * checks the gateway folderStatus; the core's restoreFromJournal() replays the
  * journal on construction and restores any plan stuck in "executing".
+ *
+ * Audit events go to stderr plus a hash-chained JSONL file. The path defaults
+ * to `<journalDir>/esign-audit.jsonl` and can be overridden with
+ * `NO_UNDO_ESIGN_AUDIT_PATH` or the `auditPath` option; pass `auditPath: null`
+ * to keep console-only auditing.
  * @param {string} [journalPath]
+ * @param {{auditPath?: string | null}} [options]
  * @returns {PlanStore<EsignPayload>}
  */
-export function createEsignStore(journalPath) {
+export function createEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
+  const auditPath = defaultAuditPath(
+    journalPath,
+    "esign",
+    "auditPath" in options ? options.auditPath : process.env.NO_UNDO_ESIGN_AUDIT_PATH,
+  );
   return new PlanStore({
     planTtlMs: 5 * 60 * 1000,
-    audit: {
-      record: (event) => {
-        console.log(
-          `[esign-audit] ${event.status} token=${event.planToken.slice(0, 8)}... tool=${event.tool}`,
-        );
-        return undefined;
-      },
-    },
+    audit: makeEsignAuditSink(auditPath),
     journalPath,
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
@@ -317,9 +354,15 @@ export function createEsignStore(journalPath) {
 export async function loadEsignStore(journalPath, options = {}) {
   initDurableStores(journalPath);
   preloadTokenMapFromJournal(journalPath);
+  const auditPath = defaultAuditPath(
+    journalPath,
+    "esign",
+    "auditPath" in options ? options.auditPath : process.env.NO_UNDO_ESIGN_AUDIT_PATH,
+  );
   const store = await PlanStore.fromJournal(journalPath, {
     ...options,
     journalPath,
+    audit: makeEsignAuditSink(auditPath),
     reconcile: async (planToken) => {
       const folderId = tokenToFolder?.get(planToken);
       if (!folderId) return "unknown";
@@ -445,6 +488,36 @@ export async function createEsignFolder(store, payload, options = {}) {
 }
 
 /**
+ * Deterministic crash injection for the demo and its tests.
+ *
+ * The money shot — "the process dies between the journal fsync and the send"
+ * — is not reproducible by hand-timing kill -9. When
+ * NO_UNDO_CRASH_AFTER_FSYNC is set to "1" (any plan) or to a specific plan
+ * token, this SIGKILLs the process at exactly that boundary: after
+ * store.beginExecute() has fsync'd "executing" to the journal, before the
+ * gateway call goes out. On restart, journal replay finds the stuck plan and
+ * reconcile decides Branch A (DRAFT → retry, no double-send) or Branch B
+ * (SHARED → record executed, send exactly once).
+ *
+ * Exported so tests can spawn a child process that exercises it without the
+ * MCP server or network. Returns true if it killed the process; unreachable,
+ * but keeps the function honest for direct calls.
+ * @param {string} planToken
+ * @returns {boolean}
+ */
+export function maybeCrashAfterFsync(planToken) {
+  const flag = process.env.NO_UNDO_CRASH_AFTER_FSYNC;
+  if (!flag) return false;
+  if (flag !== "1" && flag !== planToken) return false;
+  process.stderr.write(
+    `[crash-injection] NO_UNDO_CRASH_AFTER_FSYNC set — SIGKILL after beginExecute fsync ` +
+      `(token=${planToken.slice(0, 8)}...) before the gateway send\n`,
+  );
+  process.kill(process.pid, "SIGKILL");
+  return true;
+}
+
+/**
  * Begin the eSign send — transitions the plan to "executing". The host
  * calls sendDraftFolder() next, then confirms with confirmEsignExecuted() or
  * confirmFailed().
@@ -453,6 +526,9 @@ export async function createEsignFolder(store, payload, options = {}) {
  * cannot reconstruct the original payload (only the fingerprint), so the
  * host must re-create it. The core's beginExecute() will reject a mismatched
  * fingerprint.
+ *
+ * Crash injection sits exactly here: beginExecute has made "executing"
+ * durable; nothing irreversible has happened yet.
  * @param {PlanStore<EsignPayload>} store
  * @param {string} planToken
  * @param {EsignPayload} payload
@@ -467,6 +543,7 @@ export function beginEsignSend(store, planToken, payload) {
   if (!result.ok) {
     return { ok: false, error: result.error.message, code: result.error.code };
   }
+  maybeCrashAfterFsync(planToken);
   return { ok: true, planToken };
 }
 
