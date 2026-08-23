@@ -506,6 +506,12 @@ export async function createEsignFolder(store, payload, options = {}) {
  * @returns {boolean}
  */
 export function maybeCrashAfterFsync(planToken) {
+  if (process.env.NODE_ENV === "production") {
+    process.stderr.write(
+      "[crash-injection] ignored: NODE_ENV=production refuses crash injection\n",
+    );
+    return false;
+  }
   const flag = process.env.NO_UNDO_CRASH_AFTER_FSYNC;
   if (!flag) return false;
   if (flag !== "1" && flag !== planToken) return false;

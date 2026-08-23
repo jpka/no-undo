@@ -130,6 +130,7 @@ export function recoverHead(path, windowBytes = 64 * 1024) {
  * @returns {{
  *   path: string,
  *   record: (event: object) => undefined,
+ *   close: () => void,
  *   head: () => string,
  *   lines: () => number,
  * }}
@@ -183,6 +184,15 @@ export function createJsonlAuditSink(path) {
     path,
     head: () => recovered?.head ?? GENESIS_HASH,
     lines: () => recovered?.completeLines ?? 0,
+    /** Release the descriptor. A record() after close fails its write and
+     * reports to stderr per the never-throw contract — it does not reopen. */
+    close() {
+      try {
+        closeSync(fd);
+      } catch {
+        // Already closed or already invalid: nothing to release.
+      }
+    },
     record(event) {
       try {
         const prevHash = recovered?.head ?? GENESIS_HASH;

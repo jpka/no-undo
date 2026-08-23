@@ -156,15 +156,31 @@ test("an unparseable middle line is a broken chain, not a torn tail", async () =
 
 test("record() never throws even when the descriptor goes bad", () => {
   const dir = tmpDir();
+  let warned = "";
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => {
+    warned += String(chunk);
+    return true;
+  };
   try {
     const path = join(dir, "audit.jsonl");
     const sink = createJsonlAuditSink(path);
-    // Sabotage: close the directory by removing the file out from under an
-    // already-open fd is platform-dependent; instead point a second sink at a
-    // path that becomes a directory after init — the append must not throw.
-    sink.record(event());
+    sink.record(event({ status: "executing" }));
     assert.ok(readFileSync(path, "utf8").includes('"status":"executing"'));
+
+    // Sabotage for real: release the descriptor out from under the sink, then
+    // record again. The contract is: no throw, undefined return, stderr note.
+    sink.close();
+    warned = "";
+    const ret = sink.record(event({ status: "failed" }));
+    assert.equal(ret, undefined);
+    assert.match(warned, /append failed/);
+
+    // The chain on disk is untouched by the failed append.
+    const verdict = readFileSync(path, "utf8").trimEnd().split("\n").length;
+    assert.equal(verdict, 1);
   } finally {
+    process.stderr.write = origWrite;
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -287,4 +303,22 @@ test("maybeCrashAfterFsync kills the process only when the flag matches", () => 
     { encoding: "utf8", env: { ...process.env, NO_UNDO_CRASH_AFTER_FSYNC: "pln_x" } },
   );
   assert.equal(targeted.signal, "SIGKILL");
+
+  // NODE_ENV=production refuses crash injection even with the flag set.
+  let prodWarned = "";
+  const prod = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { maybeCrashAfterFsync } from ${JSON.stringify(adapterPath)};\n` +
+        `process.stdout.write(String(maybeCrashAfterFsync("pln_x")));`,
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, NODE_ENV: "production", NO_UNDO_CRASH_AFTER_FSYNC: "pln_x" },
+    },
+  );
+  assert.equal(prod.status, 0);
+  assert.equal(prod.stdout, "false");
 });
