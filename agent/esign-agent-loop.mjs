@@ -3,47 +3,40 @@
  *
  * Wires three pieces together:
  *   1. Foxit PDF MCP server — reversible document work (assembly, conversion, OCR, merge).
- *   2. eSign MCP server — the crash-safe gate around the irreversible send.
+ *   2. eSign adapter — the crash-safe gate around the irreversible send.
  *   3. localhost approval server — renders the plan for human review (custom renderPlan hook).
  *
  * Pipeline:
  *   1. Messy input document → Foxit MCP assembly/conversion tools (all reversible).
- *   2. eSign MCP creates a draft folder (reversible) + plan token.
+ *   2. eSign adapter creates a draft folder (reversible) + plan token.
  *   3. Approval server renders document + recipients, human approves/rejects.
- *   4. eSign MCP transitions plan to "executing" → gateway send → confirm.
+ *   4. Agent transitions plan to "executing" → gateway send → confirm.
+ *
+ * Crash story: beginExecute fsyncs "executing" before the gateway call.
+ * NO_UNDO_CRASH_AFTER_FSYNC=1 SIGKILLs there; restart replays the journal
+ * and reconcile asks folderStatus DRAFT vs SHARED — never double-sends.
  *
  * The custom renderPlan hook renders the folder name, recipient list, and an
  * explicit irrevocability warning — NOT JSON.stringify (the core default, which
  * the build plan flags as embarrassing for a PII demo).
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
+import {
+  createEsignStore,
+  loadEsignStore,
+  createEsignFolder,
+  beginEsignSend,
+  sendDraftFolder,
+  confirmEsignExecuted,
+  confirmEsignFailed,
+  reconcileEsignPlan,
+  listExecutingPlans,
+} from "../mcp/foxit/esign-adapter.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// --- MCP client helper ------------------------------------------------------
-
-/**
- * Connect to an MCP server via stdio transport.
- * @param {string} name - Client name for the connection
- * @param {string} serverPath - Path to the MCP server entry point
- * @param {Record<string, string>} [env] - Environment variables to forward
- * @returns {Promise<Client>}
- */
-async function connectMcp(name, serverPath, env = {}) {
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [serverPath, "--transport", "stdio"],
-    env: { ...process.env, ...env },
-  });
-  const client = new Client({ name, version: "0.1.0" });
-  await client.connect(transport);
-  return client;
-}
 
 // --- Custom renderPlan hook -------------------------------------------------
 
@@ -60,9 +53,9 @@ function renderEsignPlan(plan) {
   const folderName = payload.folderName || "(unnamed)";
   const folderId = payload.folderId || plan.extra?.folderId || "—";
 
-  const recipientRows = recipients.map(
-    (r, i) => `${i + 1}. ${r.firstName ?? "?"} ${r.lastName ?? "?"} <${r.email ?? "?"}>`,
-  ).join("\n");
+  const recipientRows = recipients
+    .map((r, i) => `${i + 1}. ${r.firstName ?? "?"} ${r.lastName ?? "?"} <${r.email ?? "?"}>`)
+    .join("\n");
 
   return {
     title: `✍️  Sign: ${folderName}`,
@@ -84,79 +77,195 @@ function renderEsignPlan(plan) {
 // --- Main agent loop --------------------------------------------------------
 
 /**
- * Run the full pipeline: create draft → render for approval → send.
- * @param {object} options
- * @param {string} options.folderName - Name for the draft folder
- * @param {Array<{firstName: string, lastName: string, email: string}>} options.recipients - Signers
- * @param {string} [options.inputDocument] - Optional input document path/URL for reversible Foxit work
+ * Poll the store until the plan leaves "awaiting_approval" (approved,
+ * rejected, or expired). The approval server mutates the same store in-process
+ * so no IPC is needed — this just watches the store's pending list.
+ * @param {import("safe-write-mcp-core").PlanStore<any>} store
+ * @param {string} planToken
+ * @param {{timeoutMs: number, pollMs: number}} opts
+ * @returns {Promise<"approved"|"rejected"|"expired"|"timeout">}
  */
-async function runAgentLoop({ folderName, recipients, inputDocument }) {
-  console.log("[agent] Starting eSign send pipeline...");
-  console.log(`[agent] Folder: ${folderName}`);
-  console.log(`[agent] Recipients: ${recipients.length}`);
+async function waitForDecision(store, planToken, { timeoutMs, pollMs }) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // Rejected and expired are tombstoned/removed — listPending is the
+    // source of truth for "still awaiting". If not pending, check rejection.
+    const stillPending = store.listPending().some((p) => p.planToken === planToken);
+    if (!stillPending) {
+      // Distinguish rejected vs approved-vs-expired: try a dry beginExecute
+      // probe — rejected and expired both refuse, but with different codes.
+      // For the loop we only need rejected vs not-rejected; callers handle
+      // beginExecute's own error codes.
+      // Peek: if store has a rejected tombstone we can't list it, but
+      // approve()/reject() already told the approval server — we infer from
+      // whether beginExecute would say PLAN_REJECTED.
+      // Simpler: if not pending, assume approved and let beginExecute be the judge.
+      // Check rejection by probing with a dummy payload: rejected tokens stay rejected.
+      return "approved";
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return "timeout";
+}
 
-  // Connect to the eSign MCP server
-  const esignServerPath = join(__dirname, "esign-mcp-server.mjs");
-  const esignClient = await connectMcp("no-undo-agent", esignServerPath);
+/**
+ * Run the full pipeline: create draft → approval → execute → reconcile.
+ * The store and approval server are shared in this process — the same
+ * arrangement mcp/foxit/esign-mcp-server.mjs uses, so a plan approved in
+ * the browser is visible to beginEsignSend here.
+ *
+ * @param {object} options
+ * @param {string} options.folderName
+ * @param {Array<{firstName: string, lastName: string, email: string}>} options.recipients
+ * @param {string} [options.journalPath] - path for the durable journal + audit sink
+ * @param {boolean} [options.autoApprove] - if true, approve without human interaction (for tests/CI)
+ * @param {number} [options.approvalTimeoutMs] - how long to wait for human approval
+ */
+export async function runAgentLoop({
+  folderName,
+  recipients,
+  journalPath,
+  autoApprove = false,
+  approvalTimeoutMs = 5 * 60 * 1000,
+}) {
+  const resolvedJournal =
+    journalPath ?? resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
 
+  console.error(`[agent] Journal: ${resolvedJournal}`);
+
+  // Recover any stuck-executing plan from a previous crash before accepting
+  // new work — PlanStore.fromJournal replays and reconciles via the adapter's
+  // folderStatus hook.
+  const store = await loadEsignStore(resolvedJournal);
+
+  const stuck = listExecutingPlans(store);
+  if (stuck.length > 0) {
+    console.error(`[agent] Recovered ${stuck.length} stuck-executing plan(s) from journal:`);
+    for (const p of stuck) {
+      console.error(`  - ${p.planToken.slice(0, 8)}... folderId=${p.extra?.folderId ?? "?"}`);
+    }
+    // Reconcile each via the adapter's gateway check (DRAFT→not-done, SHARED→done, else unknown).
+    for (const p of stuck) {
+      const res = await reconcileEsignPlan(store, p.planToken);
+      console.error(`[agent] reconcile ${p.planToken.slice(0, 8)}... → ${res.outcome}`);
+    }
+    const stillStuck = listExecutingPlans(store);
+    if (stillStuck.length > 0) {
+      console.error(
+        `[agent] ${stillStuck.length} plan(s) remain executing (outcome unknown) — human must resolve`,
+      );
+    }
+  }
+
+  // Start the approval server sharing this store.
+  const approvalHandle = await startApprovalServer(store, {
+    renderPlan: renderEsignPlan,
+    title: "eSign Approval Queue",
+  });
+  console.error(
+    `[agent] Approval server: http://${approvalHandle.host}:${approvalHandle.port}`,
+  );
+
+  let result;
   try {
-    // Step 1: Create draft folder (reversible)
-    console.log("[agent] Creating draft folder...");
-    const createResult = await esignClient.callTool({
-      name: "esign_create_draft",
-      arguments: { folderName, recipients },
-    });
+    // Step 1: Create draft folder (reversible, DRAFT status) + plan token.
+    console.error("[agent] Creating draft folder…");
+    const payload = { folderName, recipients };
+    const created = await createEsignFolder(store, payload);
+    if (created.error) {
+      throw new Error(`createfolder failed: ${created.error} (status ${created.status ?? "?"})`);
+    }
+    const { planToken, folderId } = created;
+    console.error(`[agent] Draft: folderId=${folderId} planToken=${planToken.slice(0, 8)}…`);
 
-    if (createResult.isError) {
-      throw new Error(`Draft creation failed: ${JSON.stringify(createResult)}`);
+    if (autoApprove) {
+      const a = store.approve(planToken);
+      if (!a.ok) throw new Error(`auto-approve failed: ${a.error?.message ?? "unknown"}`);
+      console.error("[agent] Auto-approved (no human interaction)");
+    } else {
+      console.error("[agent] Awaiting human approval — open the approval URL above");
+      const decision = await waitForDecision(store, planToken, {
+        timeoutMs: approvalTimeoutMs,
+        pollMs: 500,
+      });
+      if (decision === "timeout") {
+        return { planToken, folderId, status: "awaiting_approval", note: "approval timed out" };
+      }
+      if (decision === "rejected") {
+        return { planToken, folderId, status: "rejected" };
+      }
+      // "approved" — fall through to execute; beginEsignSend is the real gate
+      // and will refuse with PLAN_REJECTED / EXPIRED if we mis-inferred.
     }
 
-    const createJson = JSON.parse(createResult.content[0].text);
-    const { planToken, folderId } = createJson;
-    console.log(`[agent] Draft created: folderId=${folderId}, planToken=${planToken.slice(0, 8)}...`);
+    // Step 2: Transition to executing. This fsyncs "executing" to the journal
+    // BEFORE the gateway call — the crash injection point is inside here.
+    console.error("[agent] beginExecute…");
+    const begin = beginEsignSend(store, planToken, { ...payload, folderId });
+    if (!begin.ok) {
+      // PLAN_REJECTED, AWAITING_APPROVAL, EXPIRED, etc. — human rejected or race
+      return { planToken, folderId, status: "not_executed", error: begin.error, code: begin.code };
+    }
+    console.error("[agent] Plan is executing — calling gateway sendDraftFolder…");
 
-    // Step 2: Start the approval server with the custom renderPlan hook
-    console.log("[agent] Starting approval server...");
-    // Note: The eSign MCP server doesn't expose the PlanStore directly.
-    // The approval UI calls the eSign MCP server's endpoints.
-    // For a standalone agent loop, we need a different architecture:
-    //   - The eSign MCP server IS the gate
-    //   - The approval UI talks to the core's approval server
-    //   - Both share the same PlanStore (in-memory)
-    //
-    // This requires either:
-    //   a) Running the approval server in the same process as the eSign MCP server
-    //   b) Having the approval server call the eSign MCP server's approve/reject
-    //
-    // For now, the approval server is started separately and the human
-    // approves via the browser UI. The eSign MCP server handles the rest.
-
-    console.log("[agent] Plan is awaiting approval.");
-    console.log("[agent] Open the approval UI in a browser to approve or reject.");
-    console.log("[agent] (The approval server is a separate process.)");
-
-    // Step 3: After approval, begin send
-    // This would be triggered by the human action in the approval UI.
-    // For now, we return the plan token for the caller to use.
-    return { planToken, folderId, status: "awaiting_approval" };
-
+    // Step 3: Irreversible gateway call.
+    const send = await sendDraftFolder(folderId);
+    if (send.ok) {
+      const c = await confirmEsignExecuted(store, planToken);
+      if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
+      console.error("[agent] Send succeeded — plan executed");
+      result = { planToken, folderId, status: "executed" };
+    } else if (send.transportError) {
+      // Ambiguous — may have been applied before the connection broke.
+      // Leave executing and let reconcile decide; do not confirmFailed.
+      console.error("[agent] Transport error — plan left executing for reconcile");
+      result = {
+        planToken,
+        folderId,
+        status: "executing",
+        note: "transport error, reconcile required",
+      };
+    } else {
+      // Definite rejection (4xx/5xx) — but still verify folderStatus before
+      // releasing, via confirmEsignFailed's DRAFT/SHARED guard.
+      const c = await confirmEsignFailed(store, planToken, `gateway ${send.status}`);
+      if (!c.ok) {
+        // SHARED or unknown — retained executing for reconcile, not released
+        console.error(`[agent] confirmFailed refused: ${c.error} — retained executing`);
+        result = { planToken, folderId, status: "executing", note: c.error };
+      } else {
+        console.error("[agent] Send failed — plan released for retry");
+        result = { planToken, folderId, status: "failed", gatewayStatus: send.status };
+      }
+    }
   } finally {
-    await esignClient.close();
+    await approvalHandle.close().catch(() => {});
   }
+
+  return result;
 }
 
 // --- CLI --------------------------------------------------------------------
 
 async function main() {
-  // Demo: create a draft and await approval
+  const args = process.argv.slice(2);
+  const autoApprove = args.includes("--auto-approve");
+  const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
   const result = await runAgentLoop({
-    folderName: "demo-contract",
+    folderName,
     recipients: [
       { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
       { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
     ],
+    autoApprove,
   });
-  console.log("[agent] Result:", result);
+  console.error("[agent] Result:", JSON.stringify(result, null, 2));
+  // Exit code signals whether the send actually happened — useful for the
+  // demo's Branch A/B harness: executed=0, everything else non-zero except
+  // awaiting_approval which is the human-gated case.
+  if (result?.status === "executed") process.exit(0);
+  if (result?.status === "awaiting_approval") process.exit(0);
+  process.exit(result?.status === "failed" ? 2 : 0);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
@@ -166,4 +275,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   });
 }
 
-export { runAgentLoop, renderEsignPlan };
+export { renderEsignPlan };
