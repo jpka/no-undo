@@ -299,7 +299,8 @@ async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
   const promptIdx = args.indexOf("--prompt");
-  const prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
+  let prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
+  if (prompt?.startsWith("--")) prompt = null;
 
   let result;
   if (prompt) {
