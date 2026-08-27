@@ -89,12 +89,62 @@ were wrong and are corrected in `build-plan.md`.
 3. **`SHARED` semantics locked:** audit sink, approval card, and
    `docs/demo-video-script.md` must say "sent for signature" at SHARED and only
    claim a signed document after `folder_executed` + successful download.
-4. **Follow-up open item:** the `folder_executed` webhook needs a public HTTPS
-   endpoint, which is awkward for a local hackathon demo. Asked Jason whether
-   polling `document/download` can be the primary path locally with the
-   webhook optional, or whether the webhook should be stood up anyway. Answer
-   pending; polling `myfolder`/`document/download` remains the fallback either
-   way.
+4. **Follow-up open item, ANSWERED Aug 27 (see §4a):** polling-only is fine for
+   the local demo; `EXECUTED` (not `SHARED`, not `folder_completed`, not the
+   signing redirect) is the actual terminal state to poll for.
+
+---
+
+## 4a. Follow-up — Aug 27, later: polling-vs-webhook for the local demo (ANSWERED)
+
+Asked Jason whether the local hackathon demo can rely on polling as the
+primary path (since `folder_executed` needs a public HTTPS endpoint) or
+should stand up the webhook anyway. His reply:
+
+> For the local hackathon demo, yes—you can use polling as the primary path
+> and leave the webhook optional. Poll
+> `GET /esign/api/v1/folders/myfolder?folderId=...` with bounded backoff until
+> `folderStatus` is `EXECUTED`, then call
+> `GET /esign/api/v1/folders/document/download?folderId=...&docNumber=...`
+> for the signed PDF. Use `/esign/api/v1/folders/download` if you need the
+> full completed envelope.
+>
+> Do not treat `SHARED`, `folder_completed`, or the signing redirect as the
+> final state; `EXECUTED` is the point at which digital signatures have been
+> applied. Add a timeout and persist the folderId and last observed status so
+> the demo can resume safely after a restart.
+>
+> For production, I would still recommend the `folder_executed` webhook as the
+> primary completion signal, with polling as the recovery and reconciliation
+> fallback. If you want to show the webhook path locally, expose it through a
+> temporary public HTTPS tunnel and verify Foxit's HMAC signature. Otherwise,
+> the polling-only demo is reasonable.
+
+**What this changes / corrects:**
+
+- **Terminal state named precisely for the first time: `folderStatus ==
+  EXECUTED`.** Earlier framing (§2 Q2, `build-plan.md`) treated `folder_executed`
+  (the webhook event name) as the only signed-state signal and left the polled
+  `folderStatus` terminal value unnamed. It is `EXECUTED`. Two other values
+  that might look terminal are explicitly ruled out: `SHARED` (sent, not
+  signed — already known) and `folder_completed`, plus the signing redirect
+  URL a browser hits mid-flow — none of these three mean the document is
+  signed.
+- **Demo path decided: polling-only, webhook deferred.** `myfolder` poll with
+  bounded backoff → `document/download` on `EXECUTED`. No public HTTPS tunnel
+  needed for the hackathon submission. This directly unblocks Aug 29–30 item
+  (C) / cut-list #1 without a webhook-exposure dependency.
+- **New operational requirement:** persist `folderId` + last observed
+  `folderStatus` so a restart mid-poll can resume rather than re-send. The
+  adapter's existing `DurableStore` pattern (`.token-map.json`,
+  `.webhook-dedup.json` at `mcp/foxit/esign-adapter.mjs:212-217`) is the
+  natural home for this — add a `.poll-state.json` (or extend the token map)
+  keyed on `folderId`.
+- **Production note kept for the README/Devpost defense, not the demo:**
+  Jason still recommends `folder_executed` webhook-as-primary /
+  polling-as-fallback for a real deployment. Worth one line distinguishing
+  "what we built for the demo" from "what we'd ship to production," so a
+  judge doesn't read the polling-only demo as the recommended architecture.
 
 ---
 
@@ -106,6 +156,9 @@ were wrong and are corrected in `build-plan.md`.
   remaining probe risk from the cut list.
 - A correction that would otherwise have shipped as a broken tool call in the
   demo (calling `pdf_generation` against a catalog that has no such tool).
+- A precisely-named terminal state (`EXECUTED`) and an explicit go-ahead to
+  demo polling-only, removing the webhook-exposure dependency from the
+  critical path (§4a).
 
 Status: no code changed by this contact yet. `build-plan.md` reflects the
 corrections; the probe and adapter work land in the Aug 29–30 batch.
