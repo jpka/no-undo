@@ -21,18 +21,16 @@
  * the build plan flags as embarrassing for a PII demo).
  */
 
-import { join, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
 import {
-  createEsignStore,
   loadEsignStore,
   createEsignFolder,
   beginEsignSend,
   sendDraftFolder,
   confirmEsignExecuted,
   confirmEsignFailed,
-  reconcileEsignPlan,
   listExecutingPlans,
 } from "../mcp/foxit/esign-adapter.mjs";
 
@@ -88,19 +86,18 @@ function renderEsignPlan(plan) {
 async function waitForDecision(store, planToken, { timeoutMs, pollMs }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    // Rejected and expired are tombstoned/removed — listPending is the
-    // source of truth for "still awaiting". If not pending, check rejection.
     const stillPending = store.listPending().some((p) => p.planToken === planToken);
     if (!stillPending) {
-      // Distinguish rejected vs approved-vs-expired: try a dry beginExecute
-      // probe — rejected and expired both refuse, but with different codes.
-      // For the loop we only need rejected vs not-rejected; callers handle
-      // beginExecute's own error codes.
-      // Peek: if store has a rejected tombstone we can't list it, but
-      // approve()/reject() already told the approval server — we infer from
-      // whether beginExecute would say PLAN_REJECTED.
-      // Simpler: if not pending, assume approved and let beginExecute be the judge.
-      // Check rejection by probing with a dummy payload: rejected tokens stay rejected.
+      // Not pending — probe with idempotent approve(). Rejected and expired
+      // are distinguishable here; approved (or never-gated) succeeds.
+      const probe = store.approve(planToken);
+      if (!probe.ok) {
+        const code = probe.error?.code;
+        if (code === "PLAN_REJECTED") return "rejected";
+        if (code === "PLAN_EXPIRED") return "expired";
+        // Unknown token or other error — treat as expired (not approvable)
+        return "expired";
+      }
       return "approved";
     }
     await new Promise((r) => setTimeout(r, pollMs));
@@ -138,23 +135,19 @@ export async function runAgentLoop({
   // folderStatus hook.
   const store = await loadEsignStore(resolvedJournal);
 
+  // loadEsignStore already replayed the journal and reconciled each
+  // executing token via the adapter's folderStatus hook (DRAFT→not-done,
+  // SHARED→done, unknown→stays executing). Leftover entries are unknowns
+  // that need human inspection — do not re-reconcile them here.
   const stuck = listExecutingPlans(store);
   if (stuck.length > 0) {
-    console.error(`[agent] Recovered ${stuck.length} stuck-executing plan(s) from journal:`);
+    console.error(`[agent] Recovered ${stuck.length} stuck-executing plan(s) (outcome unknown, reconciled on load):`);
     for (const p of stuck) {
       console.error(`  - ${p.planToken.slice(0, 8)}... folderId=${p.extra?.folderId ?? "?"}`);
     }
-    // Reconcile each via the adapter's gateway check (DRAFT→not-done, SHARED→done, else unknown).
-    for (const p of stuck) {
-      const res = await reconcileEsignPlan(store, p.planToken);
-      console.error(`[agent] reconcile ${p.planToken.slice(0, 8)}... → ${res.outcome}`);
-    }
-    const stillStuck = listExecutingPlans(store);
-    if (stillStuck.length > 0) {
-      console.error(
-        `[agent] ${stillStuck.length} plan(s) remain executing (outcome unknown) — human must resolve`,
-      );
-    }
+    console.error(
+      `[agent] ${stuck.length} plan(s) remain executing (outcome unknown) — human must resolve`,
+    );
   }
 
   // Start the approval server sharing this store.
@@ -194,14 +187,16 @@ export async function runAgentLoop({
       if (decision === "rejected") {
         return { planToken, folderId, status: "rejected" };
       }
-      // "approved" — fall through to execute; beginEsignSend is the real gate
-      // and will refuse with PLAN_REJECTED / EXPIRED if we mis-inferred.
+      if (decision === "expired") {
+        return { planToken, folderId, status: "not_executed", error: "plan expired", code: "PLAN_EXPIRED" };
+      }
+      // "approved" — fall through to execute
     }
 
     // Step 2: Transition to executing. This fsyncs "executing" to the journal
     // BEFORE the gateway call — the crash injection point is inside here.
     console.error("[agent] beginExecute…");
-    const begin = beginEsignSend(store, planToken, { ...payload, folderId });
+    const begin = beginEsignSend(store, planToken, payload);
     if (!begin.ok) {
       // PLAN_REJECTED, AWAITING_APPROVAL, EXPIRED, etc. — human rejected or race
       return { planToken, folderId, status: "not_executed", error: begin.error, code: begin.code };
@@ -260,12 +255,22 @@ async function main() {
     autoApprove,
   });
   console.error("[agent] Result:", JSON.stringify(result, null, 2));
-  // Exit code signals whether the send actually happened — useful for the
-  // demo's Branch A/B harness: executed=0, everything else non-zero except
-  // awaiting_approval which is the human-gated case.
-  if (result?.status === "executed") process.exit(0);
-  if (result?.status === "awaiting_approval") process.exit(0);
-  process.exit(result?.status === "failed" ? 2 : 0);
+  switch (result?.status) {
+    case "executed":
+      process.exit(0);
+    case "awaiting_approval":
+      process.exit(0);
+    case "failed":
+      process.exit(2);
+    case "rejected":
+    case "not_executed":
+      process.exit(3);
+    case "executing":
+      // Outcome unknown — reconcile required before the send can be trusted.
+      process.exit(4);
+    default:
+      process.exit(1);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
