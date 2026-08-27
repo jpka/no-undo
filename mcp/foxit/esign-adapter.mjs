@@ -474,7 +474,7 @@ export async function createEsignFolder(store, payload, options = {}) {
     callerId: options.callerId ?? "agent",
     previewCount: payload.recipients.length,
     dataDigest: null, // No row-set digest for eSign — fingerprint is the binding
-    extra: { folderId, folderName: payload.folderName },
+    extra: { folderId, folderName: payload.folderName, ...options.extra },
     alwaysRequireApproval: true, // eSign is irreversible — always gate
     ...options,
   };

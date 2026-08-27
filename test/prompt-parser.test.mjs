@@ -133,4 +133,45 @@ describe("prompt-parser", () => {
       }),
     );
   });
+
+  test("extractInstructions returns null when no keywords present", () => {
+    const result = parsePrompt("Send to alice@example.com");
+    assert.equal(result.instructions, null);
+  });
+
+  test("substring false positive — 'malice' must not extract named Alice", () => {
+    const result = parsePrompt("Send the malice report for signature");
+    const hasNamedAlice = result.recipients.some((r) => r.firstName === "Alice" && r.lastName === "Smith");
+    assert.equal(hasNamedAlice, false);
+  });
+
+  test("duplicate emails produce a single recipient", () => {
+    const result = parsePrompt("Send to alice@example.com and alice@example.com");
+    assert.equal(result.recipients.length, 1);
+  });
+
+  test("capitalize only uppercases first char, leaves rest as-is", () => {
+    const result = parsePrompt("Send to mcdonald@example.com");
+    assert.equal(result.recipients[0].firstName, "Mcdonald");
+  });
+
+  test("throws on excessively long prompt", () => {
+    const long = "x".repeat(10_001);
+    assert.throws(() => parsePrompt(long), /exceeds max length/);
+  });
+
+  test("sign does not match 'design' or 'assign'", () => {
+    const result = parsePrompt("Send the design file to alice@example.com for review");
+    assert.match(result.instructions, /review required/);
+    assert.doesNotMatch(result.instructions, /signature/);
+  });
+
+  test("folder name truncation walks back to last space", () => {
+    const long =
+      "This is a very long prompt that exceeds the forty character limit for folder names";
+    const result = parsePrompt(`${long} to alice@example.com`);
+    assert.match(result.folderName, /…$/);
+    assert.ok(result.folderName.length <= 42);
+    assert.doesNotMatch(result.folderName, /\s…$/);
+  });
 });
