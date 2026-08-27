@@ -33,6 +33,7 @@ import {
   confirmEsignFailed,
   listExecutingPlans,
 } from "../mcp/foxit/esign-adapter.mjs";
+import { parsePrompt } from "../mcp/foxit/prompt-parser.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -40,8 +41,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Render an eSign plan for the approval UI.
- * Shows the folder name, recipient list, and an explicit irrevocability warning.
- * Does NOT dump the raw payload JSON.
+ * Shows the prompt excerpt, parsed folder name, recipient list, and an
+ * explicit irrevocability warning. Does NOT dump the raw payload JSON.
  * @param {import("safe-write-mcp-core/dist/approvalServer.js").PendingPlan<any>} plan
  * @returns {import("safe-write-mcp-core/dist/approvalServer.js").RenderablePlan}
  */
@@ -50,26 +51,65 @@ function renderEsignPlan(plan) {
   const recipients = Array.isArray(payload.recipients) ? payload.recipients : [];
   const folderName = payload.folderName || "(unnamed)";
   const folderId = payload.folderId || plan.extra?.folderId || "—";
+  const promptExcerpt = plan.extra?.promptExcerpt;
+  const promptInstructions = plan.extra?.promptInstructions;
+  const promptDocSource = plan.extra?.promptDocSource;
 
   const recipientRows = recipients
     .map((r, i) => `${i + 1}. ${r.firstName ?? "?"} ${r.lastName ?? "?"} <${r.email ?? "?"}>`)
     .join("\n");
 
+  const details = [];
+  if (promptExcerpt) {
+    details.push({ label: "Prompt", value: promptExcerpt });
+  }
+  details.push({ label: "Folder", value: folderName });
+  details.push({ label: "Folder ID", value: String(folderId) });
+  details.push({ label: "Recipients", value: recipientRows || "(none)" });
+  if (promptDocSource) {
+    details.push({ label: "Document source", value: promptDocSource });
+  }
+  if (promptInstructions) {
+    details.push({ label: "Instructions", value: promptInstructions });
+  }
+  details.push({ label: "Agent's reason", value: plan.reason || "(none given)" });
+  details.push({
+    label: "⚠️ Irreversible",
+    value:
+      "Approving sends this document to the listed recipients for signature. " +
+      "This action cannot be undone. Emails will be sent immediately.",
+  });
+
   return {
     title: `✍️  Sign: ${folderName}`,
-    details: [
-      { label: "Folder", value: folderName },
-      { label: "Folder ID", value: String(folderId) },
-      { label: "Recipients", value: recipientRows || "(none)" },
-      { label: "Agent's reason", value: plan.reason || "(none given)" },
-      {
-        label: "⚠️ Irreversible",
-        value:
-          "Approving sends this document to the listed recipients for signature. " +
-          "This action cannot be undone. Emails will be sent immediately.",
-      },
-    ],
+    details,
   };
+}
+
+// --- Prompt-driven entry point ----------------------------------------------
+
+/**
+ * Run the full pipeline from a single natural-language prompt. Parses the
+ * prompt into a typed EsignPayload, then delegates to runAgentLoop. The
+ * parsed fields are echoed back in the approval card for human correction
+ * before any irreversible step.
+ * @param {string} prompt
+ * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number}} [options]
+ * @returns {Promise<object>}
+ */
+export async function runFromPrompt(prompt, options = {}) {
+  const parsed = parsePrompt(prompt);
+  console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${parsed.recipients.length}`);
+  return runAgentLoop({
+    folderName: parsed.folderName,
+    recipients: parsed.recipients,
+    journalPath: options.journalPath,
+    autoApprove: options.autoApprove,
+    approvalTimeoutMs: options.approvalTimeoutMs,
+    promptExcerpt: parsed.promptExcerpt,
+    promptInstructions: parsed.instructions,
+    promptDocSource: parsed.docSource,
+  });
 }
 
 // --- Main agent loop --------------------------------------------------------
@@ -124,6 +164,9 @@ export async function runAgentLoop({
   journalPath,
   autoApprove = false,
   approvalTimeoutMs = 5 * 60 * 1000,
+  promptExcerpt = null,
+  promptInstructions = null,
+  promptDocSource = null,
 }) {
   const resolvedJournal =
     journalPath ?? resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
@@ -172,7 +215,9 @@ export async function runAgentLoop({
     // Step 1: Create draft folder (reversible, DRAFT status) + plan token.
     console.error("[agent] Creating draft folder…");
     const payload = { folderName, recipients };
-    const created = await createEsignFolder(store, payload);
+    const created = await createEsignFolder(store, payload, {
+      extra: { promptExcerpt, promptInstructions, promptDocSource },
+    });
     if (created.error) {
       throw new Error(`createfolder failed: ${created.error} (status ${created.status ?? "?"})`);
     }
@@ -253,15 +298,23 @@ export async function runAgentLoop({
 async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
-  const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
-  const result = await runAgentLoop({
-    folderName,
-    recipients: [
-      { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
-      { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
-    ],
-    autoApprove,
-  });
+  const promptIdx = args.indexOf("--prompt");
+  const prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
+
+  let result;
+  if (prompt) {
+    result = await runFromPrompt(prompt, { autoApprove });
+  } else {
+    const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
+    result = await runAgentLoop({
+      folderName,
+      recipients: [
+        { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
+        { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
+      ],
+      autoApprove,
+    });
+  }
   console.error("[agent] Result:", JSON.stringify(result, null, 2));
   switch (result?.status) {
     case "executed":
