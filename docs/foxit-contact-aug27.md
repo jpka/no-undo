@@ -1,9 +1,9 @@
 # Foxit sponsor contact — Aug 27: use case sent, SE response processed
 
 Build-plan stage: not a scheduled stage. Sponsorship outreach, answered by
-Jason Welch (Senior Strategic Alliance Manager, Foxit). Two nurture emails had
-gone unanswered; this batch drafted a reply, got a substantive technical
-answer, and used it to correct the plan.
+Jason Welch, Senior Strategic Alliance Manager at Foxit. We sent the
+plain-prompt-to-signed-document use case and three technical questions; he
+answered all three and the responses were used to correct the plan.
 
 ---
 
