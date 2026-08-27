@@ -1,19 +1,23 @@
-# Foxit sponsor contact — Aug 27: use case sent, SE response processed
+# Foxit trial-engagement contact — Aug 27: use case sent, response processed
 
-Build-plan stage: not a scheduled stage. Sponsorship outreach, answered by
-Jason Welch, Senior Strategic Alliance Manager at Foxit. We sent the
-plain-prompt-to-signed-document use case and three technical questions; he
-answered all three and the responses were used to correct the plan.
+Build-plan stage: not a scheduled stage. Not the hackathon sponsor program —
+this started as routine trial-engagement outreach from Foxit (a check-in
+triggered by an active API trial signup, offering to point us at the right
+starting point). The reply came from Jason Welch, Senior Strategic Alliance
+Manager at Foxit. We used the opening to send our actual use case and three
+technical questions; he answered all three, and the responses were used to
+correct the plan.
 
 ---
 
 ## 1. What happened
 
-Foxit sent two emails (Aug 27 context): one asking for the use case
-("what document is involved, what needs to happen to it, where users interact
-with it, whether signing/security/retention matters"), one about production
-thinking ("how should the pieces fit together... security, compliance,
-long-term maintainability") offering a tailored product tour.
+Foxit's initial email was a generic trial check-in: "I saw your Foxit API
+trial is active... are you testing a specific workflow right now... if you
+send me a quick note on what you're trying to build, I can direct you to the
+right starting point." A second email followed on production thinking ("how
+should the pieces fit together... security, compliance, long-term
+maintainability"), offering a tailored product tour.
 
 We replied with the plain-prompt-to-signed-document use case and three
 technical questions. Jason answered all three. Summary below, verbatim
@@ -24,16 +28,17 @@ corrections in §2, plan consequences in §3.
 ## 2. The response, and what it changes
 
 **Q1 — keep signing outside the MCP catalog?**
-Confirmed, in the sponsor's own words: "Based on the current Foxit tool
-surface, I would keep signing outside the MCP catalog for this submission.
-The current Foxit MCP server exposes PDF Services operations, while eSign is a
-separate API. Your explicit approval gate before the irreversible send is
-therefore a sensible pattern to defend."
+Confirmed, in his own words: "Based on the current Foxit tool surface, I
+would keep signing outside the MCP catalog for this submission. The current
+Foxit MCP server exposes PDF Services operations, while eSign is a separate
+API. Your explicit approval gate before the irreversible send is therefore a
+sensible pattern to defend."
 
 Consequence: the graded artifact (agent→human handoff design) is validated by
-the sponsor. This is quotable material for the Devpost defense paragraph —
-with Jason's permission, one line attributing the pattern choice to his
-guidance.
+a Foxit engineer. This is quotable material for the Devpost defense
+paragraph — with Jason's permission, one line attributing the pattern choice
+to his guidance. (Not an official sponsor-program endorsement — a technical
+opinion from a Foxit contact, given in a trial-support context.)
 
 **Q2 — how do we get the signed PDF out?** (unblocks pipeline step 6 / cut-list #1)
 
@@ -95,8 +100,8 @@ were wrong and are corrected in `build-plan.md`.
 
 ## 4. What the contact buys the submission
 
-- Sponsor-side validation of the exact pattern the Foxit rubric grades, in
-  writing, before the deadline.
+- A Foxit engineer's validation, in writing before the deadline, of the exact
+  pattern the Foxit rubric grades.
 - A named download route and signed-state webhook, removing the largest
   remaining probe risk from the cut list.
 - A correction that would otherwise have shipped as a broken tool call in the
