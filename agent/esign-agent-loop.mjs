@@ -148,6 +148,14 @@ export async function runAgentLoop({
     console.error(
       `[agent] ${stuck.length} plan(s) remain executing (outcome unknown) — human must resolve`,
     );
+    // Do not start a new draft while an ambiguous send is unresolved.
+    // The caller must reconcile the stuck plan(s) first (via the approval
+    // UI or reconcile tool). Return immediately before opening the server.
+    return {
+      status: "executing",
+      note: `${stuck.length} stuck plan(s) remain; human resolution required`,
+      stuck: stuck.map((p) => ({ planToken: p.planToken, folderId: p.extra?.folderId })),
+    };
   }
 
   // Start the approval server sharing this store.
