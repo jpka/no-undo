@@ -259,4 +259,64 @@ describe("agent-loop: unresolved recipients guard (issue #27)", () => {
     assert.ok(recipientDetail, "Recipients detail row exists");
     assert.match(recipientDetail.value, /UNRESOLVED/);
   });
+
+  test("programmatic override with malformed email throws (schema validation)", async () => {
+    const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    try {
+      await assert.rejects(
+        () => runFromPrompt(
+          "Send the contract to Alice for signature",
+          {
+            journalPath: j.path,
+            autoApprove: true,
+            recipients: [{ firstName: "Bad", lastName: "Recipient", email: "not-an-email" }],
+          },
+        ),
+        /Invalid email|validation/i,
+      );
+    } finally {
+      j.cleanup();
+    }
+  });
+});
+
+// --- CLI: --recipient without --prompt uses overrides (P1 fix) --------------
+
+describe("CLI: --recipient without --prompt (issue #27 P1 fix)", () => {
+  test("--recipient override is used even without --prompt", async () => {
+    // Import main() indirectly by running the CLI via child_process
+    const { execFileSync } = await import("node:child_process");
+    const agentPath = join(__dirname, "..", "agent", "esign-agent-loop.mjs");
+    let stderr = "";
+    let exitCode = 0;
+    try {
+      execFileSync(
+        "node",
+        [
+          agentPath,
+          "my-folder",
+          "--recipient", "Juan Ka <juan@real-domain.com>",
+          "--auto-approve",
+        ],
+        {
+          env: {
+            ...process.env,
+            FOXIT_CLIENT_ID: "test-client-id",
+            FOXIT_CLIENT_SECRET: "test-client-secret",
+            NO_FOXIT_MCP: "1",
+          },
+          encoding: "utf8",
+          stdio: ["inherit", "inherit", "pipe"],
+        },
+      );
+    } catch (e) {
+      exitCode = e.status ?? 1;
+      stderr = e.stderr ?? "";
+    }
+    // Should NOT fail with UNRESOLVED_RECIPIENTS — the override should be used.
+    assert.doesNotMatch(stderr, /UNRESOLVED_RECIPIENTS/);
+    // Should NOT have treated "Juan Ka <juan@real-domain.com>" as the folder name.
+    assert.doesNotMatch(stderr, /folderName="Juan Ka/);
+  });
 });

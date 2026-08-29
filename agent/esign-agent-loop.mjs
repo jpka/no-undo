@@ -35,7 +35,7 @@ import {
   pollUntilSigned,
   downloadSignedDocument,
 } from "../mcp/foxit/esign-adapter.mjs";
-import { parsePrompt, parseRecipientFlag, mergeRecipients } from "../mcp/foxit/prompt-parser.mjs";
+import { parsePrompt, parseRecipientFlag, mergeRecipients, RecipientSchema } from "../mcp/foxit/prompt-parser.mjs";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
@@ -197,12 +197,13 @@ export async function runFromPrompt(prompt, options = {}) {
   // Parse any explicit --recipient flags into resolved recipients. These
   // override the parser's guesses — if provided, they fully replace the
   // parsed list.
-  const overrides = (options.recipients ?? []).map((r) => ({
-    firstName: r.firstName,
-    lastName: r.lastName,
-    email: r.email,
-    resolved: true,
-  }));
+  const overrides = (options.recipients ?? []).map((r) => {
+    // Validate programmatic overrides through the same schema as CLI/prompt
+    // recipients so malformed values fail fast with clear diagnostics
+    // instead of producing a late gateway failure.
+    RecipientSchema.parse({ ...r, resolved: true });
+    return { firstName: r.firstName, lastName: r.lastName, email: r.email, resolved: true };
+  });
   const recipients = mergeRecipients(parsed.recipients, overrides);
   console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${recipients.length}`);
   // P6: optional Nutrient enrichment (reversible, before gate, one PlanStore).
@@ -495,13 +496,21 @@ async function main() {
   if (prompt) {
     result = await runFromPrompt(prompt, { autoApprove, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
   } else {
-    const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
+    // Skip flag values when looking for the folder name (e.g. --recipient
+    // "Name <addr>" should not be treated as the folder name).
+    const flagArgs = new Set(["--prompt", "--recipient"]);
+    const folderName = args.find((a, i) => !a.startsWith("--") && !flagArgs.has(args[i - 1])) ?? "demo-contract";
+    // Explicit --recipient overrides apply even without --prompt: use them
+    // instead of the unresolved fallback recipients (which would be refused).
+    const recipients = recipientOverrides.length > 0
+      ? recipientOverrides
+      : [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: false },
+          { firstName: "Bob", lastName: "Jones", email: "bob@example.com", resolved: false },
+        ];
     result = await runAgentLoop({
       folderName,
-      recipients: [
-        { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: false },
-        { firstName: "Bob", lastName: "Jones", email: "bob@example.com", resolved: false },
-      ],
+      recipients,
       autoApprove,
       pollForSigned,
       pollTimeoutMs,
