@@ -41,10 +41,18 @@ export const TINY_PDF_BASE64 =
   "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
 
 export function sha256Base64(base64) {
-  if (typeof base64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64.replace(/\s+/g, ""))) {
+  if (typeof base64 !== "string") {
     throw new Error("sha256Base64: invalid base64 input");
   }
-  const buf = Buffer.from(base64, "base64");
+  const normalized = base64.replace(/\s+/g, "");
+  const buf = Buffer.from(normalized, "base64");
+  const canonical = buf.toString("base64");
+  if (
+    normalized.length === 0 ||
+    (normalized !== canonical && normalized !== canonical.replace(/=+$/, ""))
+  ) {
+    throw new Error("sha256Base64: invalid base64 input");
+  }
   return createHash("sha256").update(buf).digest("hex");
 }
 
