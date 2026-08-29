@@ -156,6 +156,31 @@ describe("agent-loop integration", () => {
     }
   });
 
+  test("fixture PDF guard reads persisted documentVia — caller cannot bypass by omitting options", async () => {
+    // Greptile P1: guard must read authoritative provenance from the plan's
+    // persisted extra, not from caller options. A malicious/naive MCP client
+    // that calls beginEsignSend without passing documentVia must still be refused.
+    const { createEsignStore, createEsignFolder, beginEsignSend } = await import("../mcp/foxit/esign-adapter.mjs");
+    const j = tmpJournal();
+    try {
+      const store = createEsignStore(j.path);
+      const payload = {
+        folderName: "bypass-test",
+        recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }],
+      };
+      const { planToken } = await createEsignFolder(store, payload);
+      store.approve(planToken);
+
+      // Caller omits options entirely — must still be refused because the
+      // guard reads documentVia from the plan's persisted extra.
+      const result = beginEsignSend(store, planToken, payload);
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "FIXTURE_PDF_REQUIRES_ALLOW_FLAG");
+    } finally {
+      j.cleanup();
+    }
+  });
+
   test("fixture PDF (NO_FOXIT_MCP=1) is allowed with --allow-fixture-pdf flag", async () => {
     // Same scenario, but allowFixturePdf=true → send proceeds.
     const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");

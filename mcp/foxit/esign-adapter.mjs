@@ -771,7 +771,12 @@ export function beginEsignSend(store, planToken, payload, options = {}) {
   // because approval does not imply "I want to send a non-renderable draft".
   // The TINY_PDF_BASE64 stub is accepted by Foxit as draft but not renderable;
   // sending it to real signers is a bug, not a feature.
-  if (options.documentVia === "fixture" && !options.allowFixturePdf) {
+  //
+  // Read provenance from the plan's persisted extra (authoritative) — not from
+  // the caller's options, which an MCP client could omit to bypass the guard.
+  const entry = store.tokens?.get(planToken);
+  const documentVia = entry?.meta?.extra?.documentVia;
+  if (documentVia === "fixture" && !options.allowFixturePdf) {
     return {
       ok: false,
       error:
