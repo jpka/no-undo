@@ -31,6 +31,11 @@ import {
   createJsonlAuditSink,
   defaultAuditPath,
 } from "../lib/jsonl-audit-sink.mjs";
+import {
+  assemblePdf as defaultAssemblePdf,
+  TINY_PDF_BASE64 as fallbackPdfBase64,
+  TINY_PDF_SHA256 as fallbackPdfSha256,
+} from "./pdf-assembly.mjs";
 
 const GATEWAY = process.env.FOXIT_ESIGN_HOST ?? "https://na1.fusion.foxit.com";
 const LEGACY = process.env.FOXIT_ESIGN_LEGACY_HOST ?? "https://na1.foxitesign.foxit.com";
@@ -430,21 +435,37 @@ function preloadTokenMapFromJournal(journalPath) {
  * @returns {Promise<{planToken: string, folderId: string} | {error: string, status?: number}>}
  */
 export async function createEsignFolder(store, payload, options = {}) {
-  // Minimal one-page PDF as a placeholder document for the draft.
-  // In production this would come from the Foxit MCP's assembly tools.
-  const tinyPdf =
-    "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAw" +
-    "IG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8" +
-    "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
-    "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
-  // Call Foxit MCP to create the draft folder
+  // Foxit PDF assembly: render HTML → pdf_from_html → get_task_result
+  // (B: real Foxit PDF wiring). Falls back to deterministic tiny PDF so CI
+  // without credentials stays green — the SHA-256 remains inspectable in the
+  // approval card via extra.documentSha256.
+  const assemble = options.assemblePdf ?? defaultAssemblePdf;
+  let pdfBase64 = fallbackPdfBase64;
+  let pdfSha256 = fallbackPdfSha256;
+  let pdfVia = "fixture";
+  let pdfHtml = null;
+  try {
+    const assembled = await assemble(payload, {
+      html: options.pdfHtml ?? undefined,
+      timeoutMs: options.pdfTimeoutMs ?? undefined,
+    });
+    if (assembled?.base64) {
+      pdfBase64 = assembled.base64;
+      pdfSha256 = assembled.sha256 ?? pdfSha256;
+      pdfVia = assembled.via ?? "foxit-mcp";
+      pdfHtml = assembled.html ?? null;
+    }
+  } catch (e) {
+    console.error(`[esign-adapter] PDF assembly threw — using fixture: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  // Call Foxit eSign to create the draft folder
   const createResult = await req(`${GATEWAY}/esign/api/v1/folders/createfolder`, {
     method: "POST",
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({
       folderName: payload.folderName,
       inputType: "base64",
-      base64FileString: [tinyPdf],
+      base64FileString: [pdfBase64],
       fileNames: [`${payload.folderName}.pdf`],
       processTextTags: false,
       processAcroFields: false,
@@ -467,16 +488,32 @@ export async function createEsignFolder(store, payload, options = {}) {
     return { error: "createfolder failed", status: createResult.status };
   }
 
-  // Build plan create options
+  // Build plan create options — extra carries the Foxit-assembled document's
+  // SHA-256 for the gate's digest line (build-plan step 3: pdf_from_html bytes
+  // → base64FileString + extra.documentSha256). Always wins over any caller-
+  // supplied extra.documentSha256 so the digest matches the bytes actually sent.
+  const extra = {
+    folderId,
+    folderName: payload.folderName,
+    documentSha256: pdfSha256,
+    documentVia: pdfVia,
+    ...(options.extra ?? {}),
+    documentSha256: pdfSha256,
+    documentVia: pdfVia,
+  };
+  // Include html excerpt for debugging only when small (avoid bloating journal)
+  if (pdfHtml && pdfHtml.length < 2_000) extra.pdfHtmlPreview = pdfHtml.slice(0, 2_000);
+  const { extra: _extraIgnored, ...restOptions } = options;
   const createOpts = {
     tool: "esign_send",
     reason: options.reason ?? "Agent proposed eSign send",
     callerId: options.callerId ?? "agent",
     previewCount: payload.recipients.length,
     dataDigest: null, // No row-set digest for eSign — fingerprint is the binding
-    extra: { folderId, folderName: payload.folderName, ...options.extra },
+    extra,
     alwaysRequireApproval: true, // eSign is irreversible — always gate
-    ...options,
+    ...restOptions,
+    extra, // ensure caller cannot override the digest
   };
 
   const created = store.create(payload, createOpts);
