@@ -46,6 +46,7 @@ let originalFetch;
 beforeEach(() => {
   process.env.FOXIT_CLIENT_ID = "test-client-id";
   process.env.FOXIT_CLIENT_SECRET = "test-client-secret";
+  process.env.NO_FOXIT_MCP = "1";
   defaultFixtures();
   originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
@@ -71,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  delete process.env.NO_FOXIT_MCP;
 });
 
 // --- Temp journal helper -----------------------------------------------------

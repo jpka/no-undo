@@ -3,9 +3,9 @@
  *
  * Implements build-plan.md Aug 29–30 B: replace the `tinyPdf` base64 stub in
  * `mcp/foxit/esign-adapter.mjs:createEsignFolder` with one genuine MCP call
- * (`pdf_from_html` → `get_task_result` via `mcp/foxit/call-tool.mjs` stdio
- * transport) whose output bytes become the `base64FileString` for `createfolder`
- * and whose SHA-256 becomes `extra.documentSha256` for the gate's digest line.
+ * (`pdf_from_html` → `get_task_result` via stdio transport) whose output bytes
+ * become the `base64FileString` for `createfolder` and whose SHA-256 becomes
+ * `extra.documentSha256` for the gate's digest line.
  *
  * Single-credential repro: the same FOXIT_CLIENT_ID/FOXIT_CLIENT_SECRET pair
  * (or FOXIT_CLOUD_API_CLIENT_ID/SECRET aliases) covers both PDF Services and
@@ -15,21 +15,25 @@
  * Fixture seam: when the MCP server cannot be reached, credentials are missing,
  * or FOXIT_PDF_FIXTURE=1 / NO_FOXIT_MCP=1 is set, the assembly falls back to a
  * deterministic tiny PDF (the old stub) so CI passes without live credentials.
- * Tests that want to assert the MCP path can stub this module via injection
- * or set FOXIT_PDF_FORCE_FIXTURE=0 and mock the transport — but the default is
- * fixture-safe.
+ * The canonical flags are NO_FOXIT_MCP and FOXIT_PDF_FIXTURE (alias);
+ * FOXIT_PDF_FORCE_MCP=0 is a deprecated alias for the same. No heuristic on
+ * key prefix — tests that want fixture must set an explicit flag.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { mkdtemp } from "node:fs/promises";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // --- Fallback tiny PDF (1-page placeholder, same as before) -------------------
 // Keeps CI green when the MCP server is unavailable. Its SHA-256 is
 // precomputed so the gate's documentSha256 line remains deterministic in
-// fixture mode.
+// fixture mode. Note: intentionally minimal catalog stub, accepted by Foxit as
+// draft but not renderable — draft-only.
 export const TINY_PDF_BASE64 =
   "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAw" +
   "IG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8" +
@@ -37,7 +41,18 @@ export const TINY_PDF_BASE64 =
   "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
 
 export function sha256Base64(base64) {
-  const buf = Buffer.from(base64, "base64");
+  if (typeof base64 !== "string") {
+    throw new Error("sha256Base64: invalid base64 input");
+  }
+  const normalized = base64.replace(/\s+/g, "");
+  const buf = Buffer.from(normalized, "base64");
+  const canonical = buf.toString("base64");
+  if (
+    normalized.length === 0 ||
+    (normalized !== canonical && normalized !== canonical.replace(/=+$/, ""))
+  ) {
+    throw new Error("sha256Base64: invalid base64 input");
+  }
   return createHash("sha256").update(buf).digest("hex");
 }
 
@@ -104,8 +119,7 @@ function escapeHtml(s) {
  *   2. pdf_from_html    (documentId → taskId)
  *   3. get_task_result  (task_id polling → shareUrl / resultDocumentId → bytes)
  *
- * Bounded: 30s overall budget for the demo; poll with 2s interval and 15
- * attempts (~30s) matching the adapter's transportError handling window.
+ * Bounded: 30s overall budget for the demo; poll with 2s interval.
  *
  * @param {{folderName:string, recipients:Array<any>, instructions?:string|null, docSource?:string|null}} payload
  * @param {{timeoutMs?:number, pollIntervalMs?:number, html?:string}} [options] - html override for tests
@@ -116,8 +130,8 @@ export async function assemblePdf(payload, options = {}) {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const pollIntervalMs = options.pollIntervalMs ?? 2000;
 
-  // Fixture-seam flags: NO_FOXIT_MCP (build plan's naming), FOXIT_PDF_FIXTURE,
-  // or missing credentials all fall back to the deterministic tiny PDF.
+  // Fixture-seam flags: canonical NO_FOXIT_MCP and FOXIT_PDF_FIXTURE (alias);
+  // FOXIT_PDF_FORCE_MCP=0 is deprecated alias. Missing credentials also forces fixture.
   const forceFixture =
     process.env.NO_FOXIT_MCP === "1" ||
     process.env.FOXIT_PDF_FIXTURE === "1" ||
@@ -128,15 +142,7 @@ export async function assemblePdf(payload, options = {}) {
       (process.env.FOXIT_CLOUD_API_CLIENT_ID && process.env.FOXIT_CLOUD_API_CLIENT_SECRET)
   );
 
-  // Test seam: the esign-adapter tests set FOXIT_CLIENT_ID=test-client-id with
-  // mocked fetch. Those stubs are not real Foxit credentials, so treat them as
-  // "no creds" and return the fixture instantly instead of spending 30s trying
-  // to start the MCP server with fake keys.
-  const isTestStub =
-    (process.env.FOXIT_CLIENT_ID && process.env.FOXIT_CLIENT_ID.startsWith("test-")) ||
-    (process.env.FOXIT_CLOUD_API_CLIENT_ID && process.env.FOXIT_CLOUD_API_CLIENT_ID.startsWith("test-"));
-
-  if (forceFixture || !hasCreds || isTestStub) {
+  if (forceFixture || !hasCreds) {
     return {
       base64: TINY_PDF_BASE64,
       sha256: TINY_PDF_SHA256,
@@ -145,38 +151,60 @@ export async function assemblePdf(payload, options = {}) {
     };
   }
 
-  // Attempt live MCP path with a bounded deadline
-  const deadline = Date.now() + timeoutMs;
+  // Live MCP path — bounded by timeoutMs. When hasCreds is true we fail closed:
+  // any MCP error throws instead of silently returning fixture, so production
+  // outages are visible. Fixture fallback only when !hasCreds or forceFixture.
   let lastError = null;
 
+  // Resolve server entry via require.resolve (handles hoisted installs); fall back to joined path
+  let serverEntry;
   try {
-    const serverEntry = join(
-      __dirname,
-      "node_modules",
-      "@foxitsoftware",
-      "foxit-pdf-api-mcp-server",
-      "dist",
-      "main.js"
-    );
+    const require = createRequire(import.meta.url);
+    serverEntry = require.resolve("@foxitsoftware/foxit-pdf-api-mcp-server/dist/main.js");
+  } catch {
+    serverEntry = join(__dirname, "node_modules", "@foxitsoftware", "foxit-pdf-api-mcp-server", "dist", "main.js");
+  }
 
-    // Lazy-import the MCP SDK so the fixture path (tests/CI) does not require it
+  let transport = null;
+  let client = null;
+  try {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
 
-    const transport = new StdioClientTransport({
+    const allowedEnvKeys = [
+      "PATH",
+      "PATHEXT",
+      "HOME",
+      "TMPDIR",
+      "TMP",
+      "TEMP",
+      "SYSTEMROOT",
+      "SYSTEMDRIVE",
+      "NODE_ENV",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "TERM",
+    ];
+    const env = {};
+    for (const k of allowedEnvKeys) {
+      if (process.env[k] !== undefined) env[k] = process.env[k];
+    }
+    env.FOXIT_CLOUD_API_CLIENT_ID = process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID;
+    env.FOXIT_CLOUD_API_CLIENT_SECRET = process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET;
+    if (process.env.FOXIT_CLOUD_API_HOST) env.FOXIT_CLOUD_API_HOST = process.env.FOXIT_CLOUD_API_HOST;
+
+    transport = new StdioClientTransport({
       command: process.execPath,
       args: [serverEntry, "--transport", "stdio"],
-      env: {
-        FOXIT_CLOUD_API_CLIENT_ID:
-          process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID,
-        FOXIT_CLOUD_API_CLIENT_SECRET:
-          process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET,
-        FOXIT_CLOUD_API_HOST: process.env.FOXIT_CLOUD_API_HOST,
-      },
+      env,
     });
 
-    const client = new Client({ name: "no-undo-pdf-assembly", version: "0.1.0" });
+    client = new Client({ name: "no-undo-pdf-assembly", version: "0.1.0" });
     await client.connect(transport);
+
+    // Deadline computed after successful connect so connect latency doesn't eat poll budget
+    const deadline = Date.now() + timeoutMs;
 
     try {
       // 1. upload HTML
@@ -188,7 +216,7 @@ export async function assemblePdf(payload, options = {}) {
       const uploadJson = safeParseJson(uploadRaw);
       const documentId = uploadJson?.documentId || uploadJson?.document_id;
       if (!uploadJson?.success || !documentId) {
-        throw new Error(`upload_document failed: ${uploadRaw?.slice(0, 800)}`);
+        throw new Error(`upload_document failed: ${String(uploadRaw).slice(0, 800)}`);
       }
 
       // 2. pdf_from_html
@@ -198,7 +226,7 @@ export async function assemblePdf(payload, options = {}) {
       const convertJson = safeParseJson(convertRaw);
       const taskId = convertJson?.taskId || convertJson?.task_id;
       if (!convertJson?.success || !taskId) {
-        throw new Error(`pdf_from_html failed: ${convertRaw?.slice(0, 800)}`);
+        throw new Error(`pdf_from_html failed: ${String(convertRaw).slice(0, 800)}`);
       }
 
       // 3. poll get_task_result with bounded backoff
@@ -209,48 +237,52 @@ export async function assemblePdf(payload, options = {}) {
         });
         const statusJson = safeParseJson(statusRaw);
 
-        // The tool returns JSON with success+status fields
-        if (statusJson?.status === "completed" && statusJson?.success) {
-          // Prefer downloading via the shareUrl if present (public link, no extra
-          // MCP round-trip for file content). Fall back to download_document.
+        const normalizedStatus = String(statusJson?.status ?? "").toLowerCase();
+        const isSuccess = statusJson?.success === true || statusJson?.code === 0;
+
+        if (normalizedStatus === "completed" && isSuccess) {
           if (statusJson.shareUrl) {
             const bytes = await fetchShareUrl(statusJson.shareUrl, deadline);
             const base64 = bytes.toString("base64");
             return { base64, sha256: sha256Base64(base64), html, via: "foxit-mcp" };
           }
           if (statusJson.resultDocumentId) {
-            // Try download_document tool
-            const outPath = `/tmp/no-undo-pdf-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`;
-            // download_document writes to disk; read it back
+            const tmpDir = await mkdtemp(join(tmpdir(), "no-undo-"));
+            const outPath = join(tmpDir, `out-${randomUUID()}.pdf`);
             const dlRaw = await callMcpTool(client, "download_document", {
               documentId: statusJson.resultDocumentId,
               outputPath: outPath,
             });
             const dlJson = safeParseJson(dlRaw);
-            if (dlJson?.success && dlJson?.outputPath) {
-              const { readFile } = await import("node:fs/promises");
-              const bytes = await readFile(dlJson.outputPath);
-              const base64 = bytes.toString("base64");
-              // cleanup
-              try {
-                const { unlink } = await import("node:fs/promises");
-                await unlink(dlJson.outputPath).catch(() => {});
-              } catch {}
-              return { base64, sha256: sha256Base64(base64), html, via: "foxit-mcp" };
+            // Validate server-provided outputPath is under tmpDir to avoid traversal
+            const resolvedOut = dlJson?.outputPath ?? outPath;
+            if (!resolvedOut.startsWith(tmpDir) && !resolvedOut.startsWith(tmpdir())) {
+              throw new Error(`download_document returned unexpected path: ${resolvedOut}`);
             }
-            // If download_document not available, try shareUrl fallback already attempted
-            throw new Error(`download_document failed: ${dlRaw?.slice(0, 800)}`);
+            if (dlJson?.success && dlJson?.outputPath) {
+              const { readFile, unlink, rmdir } = await import("node:fs/promises");
+              try {
+                const bytes = await readFile(dlJson.outputPath);
+                const base64 = bytes.toString("base64");
+                return { base64, sha256: sha256Base64(base64), html, via: "foxit-mcp" };
+              } finally {
+                await unlink(dlJson.outputPath).catch(() => {});
+                await rmdir(tmpDir).catch(() => {});
+              }
+            }
+            throw new Error(`download_document failed: ${String(dlRaw).slice(0, 800)}`);
           }
-          throw new Error(`get_task_result completed without shareUrl/resultDocumentId: ${statusRaw.slice(0, 800)}`);
+          throw new Error(`get_task_result completed without shareUrl/resultDocumentId: ${String(statusRaw).slice(0, 800)}`);
         }
 
-        if (statusJson?.status === "failed" || statusJson?.success === false) {
-          throw new Error(`get_task_result failed: ${statusRaw.slice(0, 800)}`);
+        if (normalizedStatus === "failed" || statusJson?.success === false) {
+          throw new Error(`get_task_result failed: ${String(statusRaw).slice(0, 800)}`);
         }
 
         lastStatus = statusJson?.status ?? lastStatus;
-        // still working — back off
-        await new Promise((r) => setTimeout(r, pollIntervalMs));
+        const msLeft = deadline - Date.now();
+        if (msLeft <= 0) break;
+        await new Promise((r) => setTimeout(r, Math.min(pollIntervalMs, msLeft)));
       }
 
       lastError = new Error(`get_task_result polling timed out after ${timeoutMs}ms (last status: ${lastStatus})`);
@@ -260,9 +292,11 @@ export async function assemblePdf(payload, options = {}) {
     }
   } catch (e) {
     lastError = e;
-    // Fall back to fixture on any error so CI/demo without live creds stays green.
-    // In production with creds, this log makes the fallback visible — the digest
-    // will be TINY_PDF_SHA256 which is inspectable in the approval card.
+    // Fail closed when creds are present and fixture not forced — surface the error
+    if (hasCreds && !forceFixture) {
+      console.error(`[pdf-assembly] Foxit MCP assembly failed (live credentials present): ${e instanceof Error ? e.message : String(e)}`);
+      throw e;
+    }
     console.error(`[pdf-assembly] Foxit MCP assembly failed — falling back to fixture: ${e instanceof Error ? e.message : String(e)}`);
     return {
       base64: TINY_PDF_BASE64,
@@ -270,6 +304,15 @@ export async function assemblePdf(payload, options = {}) {
       html,
       via: "fixture",
     };
+  } finally {
+    // Ensure transport child is reaped even if client.connect threw
+    if (transport) {
+      try { await transport.close(); } catch {}
+    }
+    // client.close already called in inner finally when connect succeeded; this is extra safety
+    if (client) {
+      try { await client.close().catch(()=>{}); } catch {}
+    }
   }
 }
 
@@ -278,7 +321,6 @@ async function callMcpTool(client, name, args) {
   if (result.isError) {
     throw new Error(`MCP tool ${name} isError: ${JSON.stringify(result.content?.slice(0, 1)).slice(0, 800)}`);
   }
-  // content is [{type:"text", text:"{...json...}"}, ...]
   const texts = (result.content ?? [])
     .filter((c) => c.type === "text")
     .map((c) => c.text)
@@ -288,28 +330,43 @@ async function callMcpTool(client, name, args) {
 
 function safeParseJson(s) {
   if (!s) return null;
-  const trimmed = s.trim();
-  // Tool returns JSON string; sometimes with extra text prefix
-  // Find first { and last } to extract JSON
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1) return null;
-  try {
-    return JSON.parse(trimmed.slice(start, end + 1));
-  } catch {
-    return null;
-  }
+  const str = String(s).trim();
+  // Try direct parse first (handles clean JSON)
+  try { return JSON.parse(str); } catch {}
+  const start = str.indexOf("{");
+  const end = str.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try { return JSON.parse(str.slice(start, end + 1)); } catch { return null; }
 }
 
 async function fetchShareUrl(shareUrl, deadline) {
-  const msLeft = Math.max(1_000, deadline - Date.now());
+  // Validate URL before fetching — SSRF guard
+  let parsed;
+  try { parsed = new URL(shareUrl); } catch { throw new Error(`invalid shareUrl: ${shareUrl}`); }
+  if (parsed.protocol !== "https:") throw new Error(`shareUrl must be https, got ${parsed.protocol}`);
+  // Basic host allowlist: Foxit domains / CDN. Allow any https for now but require https and block private ranges
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host === "127.0.0.1" || host.startsWith("192.168.") || host.startsWith("10.")) {
+    throw new Error(`shareUrl host not allowed: ${host}`);
+  }
+  const msLeft = Math.max(0, deadline - Date.now());
+  if (msLeft <= 0) throw new Error("shareUrl fetch timed out (deadline exceeded)");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), msLeft);
   try {
-    const res = await fetch(shareUrl, { signal: controller.signal });
+    const res = await fetch(shareUrl, { signal: controller.signal, redirect: "error" });
     if (!res.ok) throw new Error(`shareUrl fetch failed ${res.status}`);
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("text/html")) throw new Error(`shareUrl returned html (likely error page): ${ct}`);
+    const len = res.headers.get("content-length");
+    if (len && Number(len) > 20 * 1024 * 1024) throw new Error(`shareUrl too large: ${len} bytes`);
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length === 0) throw new Error("shareUrl returned empty body");
+    if (buf.length > 20 * 1024 * 1024) throw new Error(`shareUrl body too large: ${buf.length} bytes`);
+    // Basic PDF magic check — warn but don't hard-fail (some PDFs may be linearized)
+    if (buf.length >= 4 && buf.subarray(0, 4).toString() !== "%PDF") {
+      console.error("[pdf-assembly] shareUrl body does not start with %PDF — continuing anyway");
+    }
     return buf;
   } finally {
     clearTimeout(timer);

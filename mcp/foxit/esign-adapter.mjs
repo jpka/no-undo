@@ -35,6 +35,7 @@ import {
   assemblePdf as defaultAssemblePdf,
   TINY_PDF_BASE64 as fallbackPdfBase64,
   TINY_PDF_SHA256 as fallbackPdfSha256,
+  sha256Base64,
 } from "./pdf-assembly.mjs";
 
 const GATEWAY = process.env.FOXIT_ESIGN_HOST ?? "https://na1.fusion.foxit.com";
@@ -443,20 +444,36 @@ export async function createEsignFolder(store, payload, options = {}) {
   let pdfBase64 = fallbackPdfBase64;
   let pdfSha256 = fallbackPdfSha256;
   let pdfVia = "fixture";
-  let pdfHtml = null;
   try {
     const assembled = await assemble(payload, {
       html: options.pdfHtml ?? undefined,
       timeoutMs: options.pdfTimeoutMs ?? undefined,
     });
     if (assembled?.base64) {
+      // Validate base64 and compute digest before accepting bytes — prevents
+      // pairing invalid payload with fixture digest (Greptile P1)
+      const computedSha = sha256Base64(assembled.base64);
       pdfBase64 = assembled.base64;
-      pdfSha256 = assembled.sha256 ?? pdfSha256;
+      pdfSha256 = computedSha;
       pdfVia = assembled.via ?? "foxit-mcp";
-      pdfHtml = assembled.html ?? null;
     }
   } catch (e) {
-    console.error(`[esign-adapter] PDF assembly threw — using fixture: ${e instanceof Error ? e.message : String(e)}`);
+    // Fixture mode (NO_FOXIT_MCP or missing creds) already returns fixture without throwing.
+    // Live credentials + MCP failure should fail closed — don't silently send wrong doc.
+    const forceFixture =
+      process.env.NO_FOXIT_MCP === "1" ||
+      process.env.FOXIT_PDF_FIXTURE === "1" ||
+      process.env.FOXIT_PDF_FORCE_MCP === "0";
+    const hasCreds = Boolean(
+      (process.env.FOXIT_CLIENT_ID && process.env.FOXIT_CLIENT_SECRET) ||
+        (process.env.FOXIT_CLOUD_API_CLIENT_ID && process.env.FOXIT_CLOUD_API_CLIENT_SECRET)
+    );
+    if (forceFixture || !hasCreds) {
+      console.error(`[esign-adapter] PDF assembly threw — using fixture: ${e instanceof Error ? e.message : String(e)}`);
+    } else {
+      console.error(`[esign-adapter] PDF assembly failed (live creds): ${e instanceof Error ? e.message : String(e)}`);
+      return { error: `pdf assembly failed: ${e instanceof Error ? e.message : String(e)}`, status: 0 };
+    }
   }
   // Call Foxit eSign to create the draft folder
   const createResult = await req(`${GATEWAY}/esign/api/v1/folders/createfolder`, {
@@ -492,17 +509,14 @@ export async function createEsignFolder(store, payload, options = {}) {
   // SHA-256 for the gate's digest line (build-plan step 3: pdf_from_html bytes
   // → base64FileString + extra.documentSha256). Always wins over any caller-
   // supplied extra.documentSha256 so the digest matches the bytes actually sent.
+  // Caller cannot override digest — single clean definition after spread.
   const extra = {
     folderId,
     folderName: payload.folderName,
-    documentSha256: pdfSha256,
-    documentVia: pdfVia,
     ...(options.extra ?? {}),
     documentSha256: pdfSha256,
     documentVia: pdfVia,
   };
-  // Include html excerpt for debugging only when small (avoid bloating journal)
-  if (pdfHtml && pdfHtml.length < 2_000) extra.pdfHtmlPreview = pdfHtml.slice(0, 2_000);
   const { extra: _extraIgnored, ...restOptions } = options;
   const createOpts = {
     tool: "esign_send",
