@@ -104,7 +104,7 @@ function renderEsignPlan(plan) {
  * @returns {Promise<object>}
  */
 export async function runFromPrompt(prompt, options = {}) {
-  const parsed = parsePrompt(prompt);
+  const parsed = await parsePrompt(prompt);
   console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${parsed.recipients.length}`);
   return runAgentLoop({
     folderName: parsed.folderName,
