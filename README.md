@@ -91,11 +91,14 @@ npm install
 source .env
 node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 
-# 3. Or use fixture mode for PDF assembly (Foxit eSign credentials still required for the gateway — source .env first)
-NO_FOXIT_MCP=1 source .env && node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+# 3. Or use fixture mode for PDF assembly (Foxit eSign credentials still required for the gateway)
+set -a; source .env; set +a
+NO_FOXIT_MCP=1 node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 ```
 
 ### Path B — Full pipeline (Foxit + Nutrient)
+
+> **Note:** Nutrient enrichment is currently a stub — it proves the single-pipeline wiring (prompt → enrichment → assembly → gate) but does not make live extraction calls. The Foxit path is fully functional. See [Known gaps](#known-gaps).
 
 ```bash
 # 1. Add both credential pairs to .env:
