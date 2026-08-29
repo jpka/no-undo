@@ -465,10 +465,10 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
     <p class="dim" style="font-size:0.85rem;">The reconciliation callback and the three-way branch are implemented in <code>mcp/foxit/esign-adapter.mjs</code> and unit-tested against the Gate&nbsp;0 fixtures. A recorded end-to-end crash-and-recover run is the demo video's job — see Known gaps for what is not yet exercised live.</p>
 
     <!--
-      PENDING (P1, P4): a captured terminal transcript of the crash and recovery.
+      PENDING (P4): a captured terminal transcript of the crash and recovery.
       Do not restore until:
-        P1 - agent/esign-agent-loop.mjs actually drives approve -> execute -> crash -> reconcile
         P4 - one real send produces the first observed folderStatus: SHARED
+      P1 (agent loop) is done — agent/esign-agent-loop.mjs drives approve → execute → crash → reconcile.
       The hash-chained JSONL audit trail itself has shipped (P2 done): both stages
       append to <journalDir>/{esign,redaction}-audit.jsonl via
       mcp/lib/jsonl-audit-sink.mjs, and P3 deterministic crash injection
@@ -568,7 +568,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <li><strong>Three upstream issues filed against our own core</strong> (#18, #19, #20) rather than patched around downstream, so the other two servers on the same kernel inherit the fixes.</li>
       <li><strong>The crash-safety redesign shipped</strong> — <code>consume()</code> split into <code>beginExecute()</code> / <code>confirmExecuted()</code> / <code>confirmFailed()</code>, with a durable streamed-replay journal.</li>
       <li><strong>The audit trail is a hash-chained JSONL file.</strong> Every lifecycle event from both irreversible stages is appended with <code>prevHash</code> + sha256, fsync'd per line, and re-verified by streaming — tamper a record and verification names the line. Crash debris (a torn final write) is truncated on recovery, never chained over.</li>
-      <li><strong><span id="test-count">180</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
+      <li><strong><span id="test-count">191</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
       <li><strong>Every live finding is committed as a fixture</strong>, including the failures and the wrong-endpoint probe that preceded the right one.</li>
     </ul>
   </div>
