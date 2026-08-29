@@ -26,11 +26,13 @@ describe("prompt-parser", () => {
       firstName: "Alice",
       lastName: "Smith",
       email: "alice@example.com",
+      resolved: false,
     });
     assert.deepEqual(result.recipients[1], {
       firstName: "Bob",
       lastName: "Jones",
       email: "bob@example.com",
+      resolved: false,
     });
     assert.equal(result.docSource, null);
     assert.match(result.instructions, /redact PII/);

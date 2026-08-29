@@ -134,9 +134,19 @@ describe("single-pipeline (P6)", () => {
     const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
     const j = tmpJournal();
     try {
+      // Explicit recipients override the parser's synthesized @example.com
+      // addresses (issue #27: bare names like "Alice and Bob" must not be
+      // sent to fabricated addresses).
       const result = await runFromPrompt(
         "Take this freight invoice and send it to Alice and Bob for signature.",
-        { journalPath: j.path, autoApprove: true },
+        {
+          journalPath: j.path,
+          autoApprove: true,
+          recipients: [
+            { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
+            { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
+          ],
+        },
       );
       assert.equal(result.status, "executed");
       assert.ok(result.folderId);
@@ -152,9 +162,18 @@ describe("single-pipeline (P6)", () => {
     assert.equal(shouldEnrichWithNutrient(), true);
     const j = tmpJournal();
     try {
+      // Issue #27: bare names like "Alice and Bob" must not send to
+      // @example.com. Explicit recipients override the parser's guesses.
       const result = await runFromPrompt(
         "Take this freight invoice and send it to Alice and Bob for signature.",
-        { journalPath: j.path, autoApprove: true },
+        {
+          journalPath: j.path,
+          autoApprove: true,
+          recipients: [
+            { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
+            { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
+          ],
+        },
       );
       assert.equal(result.status, "executed");
     } finally {

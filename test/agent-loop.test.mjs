@@ -100,20 +100,7 @@ function tmpJournal() {
 // --- Tests -------------------------------------------------------------------
 
 describe("agent-loop integration", () => {
-  test("runFromPrompt preserves folderId in plan.extra (M1 regression)", async () => {
-    const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
-    const j = tmpJournal();
-    try {
-      const result = await runFromPrompt(
-        "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature.",
-        { journalPath: j.path, autoApprove: true },
-      );
-      assert.equal(result.status, "executed");
-      assert.ok(result.folderId, "folderId present in result");
-    } finally {
-      j.cleanup();
-    }
-  });
+
 
   test("runFromPrompt passes prompt extra fields through to the plan", async () => {
     const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
