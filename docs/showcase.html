@@ -527,7 +527,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 
     <div class="note warn">
       <span class="h">What "planned" means here</span>
-      <p>The Foxit PDF Services MCP server is installed and smoke-tested — 40 tools, no signing tool among them, which is the whole premise of the challenge. But the eSign path currently attaches a stub document rather than one assembled by those tools, and the Nutrient and eSign servers run as two independent processes with two independent plan stores. <strong>The arrows above describe the design; two of them are not yet a running code path.</strong> Wiring them is the remaining build work.</p>
+      <p>The Foxit PDF Services MCP server is installed and smoke-tested — 40 tools, no signing tool among them, which is the whole premise of the challenge. The eSign path now assembles its document via <code>pdf_from_html</code> → <code>get_task_result</code> (Aug 29–30 B) and falls back to a fixture only when <code>NO_FOXIT_MCP</code> is set, but the Nutrient and eSign servers still run as two independent processes with two independent plan stores. <strong>One of the arrows above is now a running code path; the other (single pipeline) is not yet.</strong> Collapsing them onto one <code>PlanStore</code> is the remaining build work (P6).</p>
     </div>
 
     <p>The gate itself is not Foxit-specific. <code>safe-write-mcp-core</code> owns only the plan lifecycle; preview rendering and reconciliation are host-supplied. Foxit and Nutrient are adapters, not dependencies — which is why the same kernel already sits behind two other servers.</p>
