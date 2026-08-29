@@ -1,0 +1,34 @@
+[PASS] 1. eSign entitlement (GET getAllFolderIdsByStatus)
+       HTTP 200 in 1389ms :: {"result":"error","error_description":"The parameters dateFrom can not be empty."}
+[PASS] 4. send-draft route on gateway host
+       HTTP 200 in 938ms :: {"result":"error","error_description":"folderId parameter must be required."}  (non-404 => route exists)
+[PASS] 4. send-draft route on legacy host
+       HTTP 401 in 407ms :: {"result":"error","errorCode":"access_token_missing","error_description":"access_token is missing in header and also in query parameters. Include access_token in either one of these."}  (non-404 => route exists)
+[SKIP] 2. createfolder(sendNow:false)
+       re-run with --create-draft
+[SKIP] 3. folderStatus === DRAFT
+       re-run with --create-draft
+[PASS] 5. pollUntilSigned / EXECUTED terminal state
+       HTTP 200 in 798ms :: {"result":"success","folder":{"folderId":35633563,"folderName":"no-undo-probe-1788012439909","folderCustomName":"${doc_name}","folderPassword":null,"folderAuthorId":0,"folderAuthorFirstName":"[redacted]","folderAuthorLastName":"[redacted]","folderAuthorEmail":
+       folderStatus=DRAFT — DRAFT (not sent)
+       (still DRAFT after bounded retry — self-sign may still be pending; EXECUTED is the terminal to wait for)
+[PASS] 6. download route (single document)
+       HTTP 400 in 809ms :: invalid document index number  (non-404 => route exists) — body: invalid document index number
+[PASS] 6. download route (envelope)
+       HTTP 400 in 722ms :: folder 35633563 is not executed yet.  (non-404 => route exists) — body: folder 35633563 is not executed yet.
+
+================ VERDICT ================
+OK    1. eSign entitlement (GET getAllFolderIdsByStatus)
+OK    4. send-draft route on gateway host
+OK    4. send-draft route on legacy host
+SKIP  2. createfolder(sendNow:false)
+SKIP  3. folderStatus === DRAFT
+OK    5. pollUntilSigned / EXECUTED terminal state
+OK    6. download route (single document)
+OK    6. download route (envelope)
+
+What this means for the build plan:
+  eSign reachable but the draft step is unconfirmed.
+  -> Re-run with --create-draft, or the send must be modelled as a
+     single irreversible createfolder(sendNow:true) call, which makes
+     the pre-send ledger write the ONLY protection. Note it in the plan.
