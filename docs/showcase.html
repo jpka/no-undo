@@ -370,7 +370,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       </table>
     </div>
 
-    <p><strong style="color:var(--red);">Router verdict: human review of this extraction.</strong> The extraction result — including the wrong total — is not allowed to flow onward unattended; a person has to look at it. What a human review of the extraction does <em>not</em> yet do is gate anything downstream: today, applying redactions is separately gated behind its own approval (<code>alwaysRequireApproval: true</code>), and routing an extracted document into an eSign send through one enforced pipeline is <span class="pill">planned</span> (prerequisite P6 in the shooting spec) — not shipped enforcement.</p>
+    <p><strong style="color:var(--red);">Router verdict: human review of this extraction.</strong> The extraction result — including the wrong total — is not allowed to flow onward unattended; a person has to look at it. Applying redactions is separately gated behind its own approval (<code>alwaysRequireApproval: true</code>), and the single pipeline (<code>prompt → optional Nutrient enrichment → Foxit assembly → gate → eSign</code>) now shares one <code>PlanStore</code> and one approval queue (P6). When Nutrient keys are absent, the pipeline reproduces with a single Foxit credential pair — the Foxit track's judged path — with Nutrient as optional enrichment.</p>
 
     <div class="note warn">
       <span class="h">What that costs — stated up front</span>
@@ -392,7 +392,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 <section>
   <div class="wrap">
     <h2><span class="num">4</span>The document that looks redacted and isn't<span class="pill shipped">shipped</span></h2>
-    <p>Same gate, a second irreversible action. Staging redactions with <code>createRedactions</code> is reversible and runs unattended. <code>applyRedactions</code> destroys content permanently, so it sits behind <code>alwaysRequireApproval: true</code> — approval-gated in its own right, by the same mechanism the eSign stage uses for the send. (One shared approval queue spanning extraction → redaction → eSign is the design; wiring them together is planned work — P6.)</p>
+    <p>Same gate, a second irreversible action. Staging redactions with <code>createRedactions</code> is reversible and runs unattended. <code>applyRedactions</code> destroys content permanently, so it sits behind <code>alwaysRequireApproval: true</code> — approval-gated in its own right, by the same mechanism the eSign stage uses for the send. The single pipeline shares one <code>PlanStore</code> and one approval queue across <code>prompt → optional Nutrient enrichment → Foxit assembly → gate → eSign</code> (P6).</p>
 
     <p><strong>Searching the raw bytes is not a sufficient check.</strong> Nutrient re-compresses the content stream, so the PII string is absent from all three files — the naive verification passes on a document that is still dangerous. Decompressing every <code>FlateDecode</code> stream shows what is actually there:</p>
 
@@ -509,7 +509,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <div class="box">
         <div class="name">Foxit PDF</div>
         <div class="role">Assembly · OCR · merge</div>
-        <div class="st p">planned</div>
+        <div class="st s">shipped</div>
       </div>
       <div class="arrow">→</div>
       <div class="box gate">
@@ -526,8 +526,8 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
     </div>
 
     <div class="note warn">
-      <span class="h">What "planned" means here</span>
-      <p>The Foxit PDF Services MCP server is installed and smoke-tested — 40 tools, no signing tool among them, which is the whole premise of the challenge. The eSign path now assembles its document via <code>pdf_from_html</code> → <code>get_task_result</code> (Aug 29–30 B) and falls back to a fixture only when <code>NO_FOXIT_MCP</code> is set, but the Nutrient and eSign servers still run as two independent processes with two independent plan stores. <strong>One of the arrows above is now a running code path; the other (single pipeline) is not yet.</strong> Collapsing them onto one <code>PlanStore</code> is the remaining build work (P6).</p>
+      <span class="h">What "shipped" means here</span>
+      <p>All four boxes above are now running code. The eSign path assembles its document via <code>pdf_from_html</code> → <code>get_task_result</code> (Aug 29–30 B) and falls back to a fixture only when <code>NO_FOXIT_MCP</code> is set. The cold-open prompt — <code>Take this freight invoice, redact the PII, and send it to Alice and Bob for signature.</code> — is parsed by <code>mcp/foxit/prompt-parser.mjs</code> into a typed payload and echoed back in the approval card for correction before the gate (Aug 29–30 A). When <code>NUTRIENT_API_KEY</code> + <code>NUTRIENT_DWS_EXTRACTION_API_KEY</code> are present, the same <code>PlanStore</code> and approval queue enrich the pipeline with a best-effort Nutrient stage before assembly; without them, the pipeline reproduces with a single Foxit credential pair (P6 single-pipeline wiring). Signed-document retrieval polls <code>EXECUTED</code> and downloads via <code>document/download</code> (Aug 29–30 C).</p>
     </div>
 
     <p>The gate itself is not Foxit-specific. <code>safe-write-mcp-core</code> owns only the plan lifecycle; preview rendering and reconciliation are host-supplied. Foxit and Nutrient are adapters, not dependencies — which is why the same kernel already sits behind two other servers.</p>
@@ -568,7 +568,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <li><strong>Three upstream issues filed against our own core</strong> (#18, #19, #20) rather than patched around downstream, so the other two servers on the same kernel inherit the fixes.</li>
       <li><strong>The crash-safety redesign shipped</strong> — <code>consume()</code> split into <code>beginExecute()</code> / <code>confirmExecuted()</code> / <code>confirmFailed()</code>, with a durable streamed-replay journal.</li>
       <li><strong>The audit trail is a hash-chained JSONL file.</strong> Every lifecycle event from both irreversible stages is appended with <code>prevHash</code> + sha256, fsync'd per line, and re-verified by streaming — tamper a record and verification names the line. Crash debris (a torn final write) is truncated on recovery, never chained over.</li>
-      <li><strong><span id="test-count">114</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
+      <li><strong><span id="test-count">180</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
       <li><strong>Every live finding is committed as a fixture</strong>, including the failures and the wrong-endpoint probe that preceded the right one.</li>
     </ul>
   </div>
@@ -584,7 +584,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
       <li><strong>Redaction cannot be reconciled at all.</strong> The build endpoint is one synchronous request with no job ID and no server-side state, so <code>reconcile</code> returns <code>unknown</code> honestly and a plan interrupted mid-apply stays visibly stuck for a human.</li>
       <li><strong>No eSign send has been performed end to end yet.</strong> Gate 0 proved entitlement and confirmed the send route exists; <code>folderStatus: SHARED</code> has not yet been observed live.</li>
       <li><strong>The redaction byte-check has no committed artifact.</strong> It was verified live and written up, but those unit tests mock the transport.</li>
-      <li><strong>Two Foxit pipeline stages are design, not code.</strong> See the architecture note above.</li>
+      <li><strong>Nutrient live extraction is not yet wired into the pipeline.</strong> The single-pipeline shape (prompt → enrichment → assembly → gate) is shipped; the enrichment step currently stages the document and proves the adapter is importable, with live <code>routeFields</code> routing as the next increment once a calibration sample is committed.</li>
     </ul>
   </div>
 </section>

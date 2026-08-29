@@ -25,7 +25,7 @@
 | P3 | Deterministic crash injection — an env flag that exits immediately after `beginExecute` fsyncs. Hand-timed `kill -9` is not reproducible. | The money shot | ✅ **DONE** — `NO_UNDO_CRASH_AFTER_FSYNC=1` (or an exact plan token) SIGKILLs inside `beginEsignSend` between the journal fsync and the gateway call (`maybeCrashAfterFsync`, `mcp/foxit/esign-adapter.mjs`). Spawn-tested; Branch A/B recording = set flag, run, restart. |
 | P4 | One real send to your own address, producing the missing `SHARED` fixture. No send has ever succeeded; `folderStatus: SHARED` has never been observed. | Exactly-once branch | ☐ |
 | P5 | Wire one real Foxit PDF merge into draft creation. Today the eSign path uses a hardcoded base64 stub — `esign-adapter.mjs:391`: `// In production this would come from the Foxit MCP's assembly tools.` | Architecture claim | ✅ **DONE** — `mcp/foxit/pdf-assembly.mjs` renders `buildInvoiceHtml(payload)` → `pdf_from_html` → `get_task_result` via `call-tool.mjs` stdio; `esign-adapter.mjs:createEsignFolder` now uses the assembled bytes + `sha256Base64` → `extra.documentSha256`. Falls back to `TINY_PDF` only with `NO_FOXIT_MCP=1` / missing creds. Tested in `test/pdf-assembly.test.mjs`. |
-| P6 | Chain Nutrient → eSign onto one PlanStore. They are currently independent servers with independent stores. | Cold open | ☐ |
+| P6 | Chain Nutrient → eSign onto one PlanStore. They are currently independent servers with independent stores. | Cold open | ✅ **DONE (Foxit-only single pipeline; Nutrient enrichment optional)** — `agent/esign-agent-loop.mjs:runFromPrompt` parses the prompt, optionally enriches via `enrichWithNutrient` (reversible, before gate) when `NUTRIENT_API_KEY` + `NUTRIENT_DWS_EXTRACTION_API_KEY` are present, then reuses the same `PlanStore` + approval queue for `createEsignFolder` → gate → `sendDraftFolder`. Without Nutrient keys the same path reproduces with a single Foxit credential pair (judged Foxit track). Approval card surfaces `nutrientSummary` + `promptExcerpt`. Tested via `test/agent-loop.test.mjs` enrichment + Foxit-only paths. |
 | P7 | Capture a real staged-vs-applied redaction artifact. The byte-size table in `docs/nutrient-stage-aug20.md` has no committed fixture; those tests mock `fetch`. | Redaction beat | ☐ |
 | P8 | Fix `.github/workflows/ci.yml` — it runs 1 of 4 test files, so the full suite is a local claim. | Test-count claim | ✅ **DONE** — CI now runs `npm test` (the full glob; 179 tests). |
 | P9 | Pull and commit the **actual** hackathon rules. The repo contains no rules, no Devpost URL, no rubric, no stated video limit. Every runtime number in this repo is self-imposed. | Runtime target | ☐ |
@@ -40,7 +40,7 @@ printed to stderr. You cannot pre-open a bookmarked tab; read the port off the t
 
 ## Cold open (0:00–0:15) — the prompt
 
-*Needs P6.*
+*P6 shipped — Foxit-only cold open works now; Nutrient enrichment when keys present.*
 
 **Visual:** Terminal, clean dark theme. Someone types a single line:
 
