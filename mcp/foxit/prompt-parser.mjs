@@ -24,6 +24,10 @@ export const RecipientSchema = z.object({
   firstName: z.string().min(1).max(50),
   lastName: z.string().min(1).max(50),
   email: z.string().email(),
+  // `true` when the email was explicitly provided (in the prompt or via
+  // --recipient); `false` when synthesized from a name match or the
+  // Alice/Bob fallback. The live send path refuses unresolved recipients.
+  resolved: z.boolean().default(true),
 });
 export const ParsedPromptSchema = z.object({
   folderName: z.string().min(1).max(200),
@@ -81,14 +85,14 @@ function extractRecipients(prompt) {
   if (emails.length > 0) {
     return emails.map((email) => {
       const { firstName, lastName } = deriveNameFromEmail(email);
-      return { firstName, lastName, email };
+      return { firstName, lastName, email, resolved: true };
     });
   }
   const named = extractNamedRecipients(prompt);
   if (named.length > 0) return named;
   return [
-    { firstName: "Alice", lastName: "Signer", email: "alice@example.com" },
-    { firstName: "Bob", lastName: "Signer", email: "bob@example.com" },
+    { firstName: "Alice", lastName: "Signer", email: "alice@example.com", resolved: false },
+    { firstName: "Bob", lastName: "Signer", email: "bob@example.com", resolved: false },
   ];
 }
 
@@ -97,7 +101,7 @@ function extractNamedRecipients(prompt) {
   for (const n of KNOWN_NAMES) {
     const re = new RegExp(`\\b${n.first}\\b`, "i");
     if (re.test(prompt)) {
-      found.push({ firstName: n.first, lastName: n.last, email: `${n.first.toLowerCase()}@example.com` });
+      found.push({ firstName: n.first, lastName: n.last, email: `${n.first.toLowerCase()}@example.com`, resolved: false });
     }
   }
   return found;
@@ -181,4 +185,47 @@ export function isValidPrompt(prompt) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Parse a --recipient flag value ("Name <email>" or bare "email") into a
+ * resolved recipient. These override any synthesized addresses from the
+ * prompt parser. Throws on malformed input so the CLI fails fast.
+ * @param {string} flag
+ * @returns {{firstName: string, lastName: string, email: string, resolved: true}}
+ */
+export function parseRecipientFlag(flag) {
+  if (typeof flag !== "string" || !flag.trim()) {
+    throw new Error("parseRecipientFlag: empty recipient");
+  }
+  const m = flag.match(/^\s*([^<]+?)\s*<([^>]+)>\s*$/);
+  if (m) {
+    const email = m[2].trim().toLowerCase();
+    const name = m[1].trim();
+    const parts = name.split(/\s+/);
+    const firstName = parts[0] || "Signer";
+    const lastName = parts.slice(1).join(" ") || "Signer";
+    RecipientSchema.parse({ firstName, lastName, email, resolved: true });
+    return { firstName, lastName, email, resolved: true };
+  }
+  // Bare email
+  const email = flag.trim().toLowerCase();
+  RecipientSchema.parse({ firstName: "Signer", lastName: "Signer", email, resolved: true });
+  const { firstName, lastName } = deriveNameFromEmail(email);
+  return { firstName, lastName, email, resolved: true };
+}
+
+/**
+ * Merge explicit --recipient overrides with parsed recipients. If overrides
+ * are provided, they fully replace the parsed list (the user is telling us
+ * exactly who to send to — the parser's guesses are irrelevant). Without
+ * overrides, parsed recipients pass through unchanged (and may include
+ * unresolved entries, which the send path will refuse).
+ * @param {Array} parsed
+ * @param {Array} overrides
+ * @returns {Array}
+ */
+export function mergeRecipients(parsed, overrides = []) {
+  if (overrides.length > 0) return overrides;
+  return parsed;
 }

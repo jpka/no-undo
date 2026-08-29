@@ -35,7 +35,7 @@ import {
   pollUntilSigned,
   downloadSignedDocument,
 } from "../mcp/foxit/esign-adapter.mjs";
-import { parsePrompt } from "../mcp/foxit/prompt-parser.mjs";
+import { parsePrompt, parseRecipientFlag, mergeRecipients, RecipientSchema } from "../mcp/foxit/prompt-parser.mjs";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
@@ -60,7 +60,11 @@ function renderEsignPlan(plan) {
   const promptDocSource = plan.extra?.promptDocSource;
 
   const recipientRows = recipients
-    .map((r, i) => `${i + 1}. ${r.firstName ?? "?"} ${r.lastName ?? "?"} <${r.email ?? "?"}>`)
+    .map((r, i) => {
+      const addr = r.email ?? "?";
+      const warning = r.resolved === false ? " ⚠️ UNRESOLVED — will not be sent live" : "";
+      return `${i + 1}. ${r.firstName ?? "?"} ${r.lastName ?? "?"} <${addr}>${warning}`;
+    })
     .join("\n");
 
   const details = [];
@@ -185,12 +189,23 @@ export async function enrichWithNutrient(parsed, options = {}) {
  * parsed fields are echoed back in the approval card for human correction
  * before any irreversible step.
  * @param {string} prompt
- * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number}} [options]
+ * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number, recipients?: Array<{firstName: string, lastName: string, email: string, resolved?: boolean}>}} [options]
  * @returns {Promise<object>}
  */
 export async function runFromPrompt(prompt, options = {}) {
   const parsed = await parsePrompt(prompt);
-  console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${parsed.recipients.length}`);
+  // Parse any explicit --recipient flags into resolved recipients. These
+  // override the parser's guesses — if provided, they fully replace the
+  // parsed list.
+  const overrides = (options.recipients ?? []).map((r) => {
+    // Validate programmatic overrides through the same schema as CLI/prompt
+    // recipients so malformed values fail fast with clear diagnostics
+    // instead of producing a late gateway failure.
+    RecipientSchema.parse({ ...r, resolved: true });
+    return { firstName: r.firstName, lastName: r.lastName, email: r.email, resolved: true };
+  });
+  const recipients = mergeRecipients(parsed.recipients, overrides);
+  console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${recipients.length}`);
   // P6: optional Nutrient enrichment (reversible, before gate, one PlanStore).
   // Foxit-only remains the single-credential repro when keys are absent.
   const enrichment = await enrichWithNutrient(parsed, { docBytes: options.docBytes, journalPath: options.journalPath });
@@ -198,7 +213,7 @@ export async function runFromPrompt(prompt, options = {}) {
   if (nutrientSummary) console.error(`[agent] Nutrient: ${nutrientSummary}`);
   return runAgentLoop({
     folderName: parsed.folderName,
-    recipients: parsed.recipients,
+    recipients,
     journalPath: options.journalPath,
     autoApprove: options.autoApprove,
     approvalTimeoutMs: options.approvalTimeoutMs,
@@ -352,6 +367,23 @@ export async function runAgentLoop({
       // "approved" — fall through to execute
     }
 
+    // Refuse to send if any recipient has a synthesized (unresolved) email.
+    // The parser falls back to Alice/Bob or matches bare names against
+    // KNOWN_NAMES — neither is a real address. The only safe paths are:
+    // emails written in the prompt itself, or --recipient overrides.
+    const unresolved = recipients.filter((r) => r.resolved === false);
+    if (unresolved.length > 0) {
+      const names = unresolved.map((r) => `${r.firstName} ${r.lastName} <${r.email}>`).join(", ");
+      console.error(`[agent] ABORT: unresolved recipient(s) — ${names}. Use --recipient "Name <addr>" to specify real addresses.`);
+      return {
+        planToken,
+        folderId,
+        status: "not_executed",
+        error: `unresolved recipient(s): ${names}`,
+        code: "UNRESOLVED_RECIPIENTS",
+      };
+    }
+
     // Step 2: Transition to executing. This fsyncs "executing" to the journal
     // BEFORE the gateway call — the crash injection point is inside here.
     console.error("[agent] beginExecute…");
@@ -450,17 +482,35 @@ async function main() {
   let prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
   if (prompt?.startsWith("--")) prompt = null;
 
+  // Parse repeatable --recipient "Name <addr>" flags. Explicit recipients
+  // override any synthesized addresses from the parser.
+  const recipientFlags = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--recipient" && args[i + 1] && !args[i + 1].startsWith("--")) {
+      recipientFlags.push(args[i + 1]);
+    }
+  }
+  const recipientOverrides = recipientFlags.map((f) => parseRecipientFlag(f));
+
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove, pollForSigned, downloadSigned, pollTimeoutMs });
+    result = await runFromPrompt(prompt, { autoApprove, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
   } else {
-    const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
+    // Skip flag values when looking for the folder name (e.g. --recipient
+    // "Name <addr>" should not be treated as the folder name).
+    const flagArgs = new Set(["--prompt", "--recipient"]);
+    const folderName = args.find((a, i) => !a.startsWith("--") && !flagArgs.has(args[i - 1])) ?? "demo-contract";
+    // Explicit --recipient overrides apply even without --prompt: use them
+    // instead of the unresolved fallback recipients (which would be refused).
+    const recipients = recipientOverrides.length > 0
+      ? recipientOverrides
+      : [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: false },
+          { firstName: "Bob", lastName: "Jones", email: "bob@example.com", resolved: false },
+        ];
     result = await runAgentLoop({
       folderName,
-      recipients: [
-        { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
-        { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
-      ],
+      recipients,
       autoApprove,
       pollForSigned,
       pollTimeoutMs,
