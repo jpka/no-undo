@@ -355,6 +355,42 @@ describe("downloadSignedDocument", () => {
   });
 });
 
+describe("pollUntilSigned — deadline adherence", () => {
+  test("poll does not overrun caller timeout by awaiting a stalled 30s request", async () => {
+    // Simulate a stalled gateway: fetch would hang for 2s but poll timeout is 150ms.
+    // The adapter bounds the request's AbortSignal to the remaining poll budget,
+    // so fetch aborts promptly instead of overrunning by 30s. Mock respects signal.
+    globalThis.fetch = async (url, init = {}) => {
+      const signal = init.signal;
+      // Race the 2s stall against signal abort
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => resolve(), 2000);
+        if (signal) {
+          if (signal.aborted) { clearTimeout(timer); reject(signal.reason ?? new DOMException("Aborted", "AbortError")); return; }
+          signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason ?? new DOMException("Aborted", "AbortError")); }, { once: true });
+        }
+      });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ folder: { folderStatus: "SHARED" } }), json: async () => ({ folder: { folderStatus: "SHARED" } }), arrayBuffer: async () => new Uint8Array().buffer };
+    };
+    const { pollUntilSigned, createEsignStore } = await importAdapter();
+    const j = tmpJournal();
+    try {
+      createEsignStore(j.path);
+      const started = Date.now();
+      const r = await pollUntilSigned("deadline-test", { timeoutMs: 150, intervalMs: 20 });
+      const elapsed = Date.now() - started;
+      assert.equal(r.executed, false);
+      // Should return within ~400ms, not 2s+. Allow generous 600ms ceiling.
+      assert.ok(elapsed < 600, `elapsed ${elapsed}ms exceeds bound — request overran poll timeout`);
+    } finally {
+      try { unlinkSync(j.path); } catch {}
+      try { unlinkSync(join(j.dir, ".poll-state.json")); } catch {}
+      try { unlinkSync(join(j.dir, ".token-map.json")); } catch {}
+      try { unlinkSync(join(j.dir, ".webhook-dedup.json")); } catch {}
+    }
+  });
+});
+
 describe("audit note: SHARED vs EXECUTED", () => {
   test("SHARED does NOT mean signed — poll must continue", async () => {
     stubFetch({

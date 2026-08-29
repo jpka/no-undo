@@ -78,14 +78,18 @@ function gatewayHeaders(extra = {}) {
 /**
  * @param {string} url
  * @param {RequestInit} [init]
+ * @param {number} [timeoutMs=30_000]
  * @returns {Promise<{ok: boolean, status: number, text: string, json: any, ms: number, transportError: boolean}>}
  */
-async function req(url, init = {}) {
+async function req(url, init = {}, timeoutMs = 30_000) {
   const started = Date.now();
+  // Merge caller's signal (if any) with our timeout — caller's signal wins if already aborted
+  const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
+  const { signal: _ignored, ...restInit } = init;
   try {
     const res = await fetch(url, {
-      ...init,
-      signal: AbortSignal.timeout(30_000),
+      ...restInit,
+      signal,
       redirect: "error", // don't follow redirects — could leak credentials to untrusted hosts
     });
     const text = await res.text();
@@ -259,10 +263,12 @@ function markWebhookProcessed(folderId, eventName) {
  * @param {string} folderId
  * @returns {Promise<string|null>}
  */
-export async function checkFolderStatus(folderId) {
+export async function checkFolderStatus(folderId, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
   const r = await req(
     `${GATEWAY}/esign/api/v1/folders/myfolder?folderId=${encodeURIComponent(folderId)}`,
     { headers: gatewayHeaders() },
+    timeoutMs,
   );
   if (!r.ok) return null;
   const j = r.json;
@@ -377,7 +383,10 @@ export async function pollUntilSigned(folderId, options = {}) {
 
   while (Date.now() < deadline) {
     attempts += 1;
-    const status = await checkFolderStatus(folderId);
+    const remainingForReq = Math.max(500, deadline - Date.now());
+    // Bound the network request to the remaining poll budget so a stalled
+    // gateway call cannot overrun the caller's --poll-timeout by 30s.
+    const status = await checkFolderStatus(folderId, { timeoutMs: Math.min(30_000, remainingForReq) });
     lastStatus = status;
     try {
       pollState?.set(folderId, { status, updatedAt: new Date().toISOString(), attempts });

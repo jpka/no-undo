@@ -47,8 +47,7 @@ const folderIdArg = (() => {
   const i = process.argv.indexOf("--folderId");
   return i >= 0 ? process.argv[i + 1] : null;
 })();
-// --poll-only skips draft creation and only exercises poll+download against an existing folderId
-const pollOnly = process.argv.includes("--poll-only");
+let probeCreatedFolderId = null;
 const results = [];
 
 /** Records a test result with its name, verdict (ok/fail/skip), and optional detail message. */
@@ -210,6 +209,7 @@ if (!createDraft) {
     create.json?.folderId ??
     create.json?.data?.folderId ??
     null;
+  if (folderId) probeCreatedFolderId = String(folderId);
 
   record(
     "2. createfolder(sendNow:false) returns folderId",
@@ -243,46 +243,13 @@ if (!createDraft) {
 
 // --- 5 + 6. Download + poll-until-EXECUTED (PLANNED Aug 29-30 C) ----------
 if (probeDownload) {
-  // Determine the folderId to probe — either the one just created, or an explicit --folderId
-  let targetFolderId = folderIdArg;
-  // If we just created a draft above, reuse that id
-  if (!targetFolderId) {
-    // Try to capture the folderId from the create step's result (re-read via closure variable)
-    // The create draft step stored `folderId` inside `if (folderId) {...}` — we need to
-    // re-derive it if probe-download was run with --create-draft. Reuse the last
-    // recorded folderId from that step by re-parsing (the variable `folderId` is block-scoped
-    // above, so we re-issue a minimal fetch if not already set).
-    // For the poll-only/download-only path we require --folderId explicitly.
-    if (createDraft) {
-      // folderId was block-scoped; without hoisting we can't read it here without
-      // re-executing the status fetch. For --probe-download with --create-draft we
-      // refetch the latest created id from the in-memory `results` hint — the folderId
-      // line was logged above. As a fallback, probe the most recent id via getAllFolderIdsByStatus.
-      try {
-        const fetched = await req(
-          `${GATEWAY}/esign/api/v1/folders/getAllFolderIdsByStatus?folderStatus=DRAFT`,
-          { headers: gatewayHeaders() },
-        );
-        const ids = fetched.json?.folderIds ?? fetched.json?.data?.folderIds ?? fetched.json?.folders ?? [];
-        if (Array.isArray(ids) && ids.length > 0) {
-          const last = ids[ids.length - 1];
-          targetFolderId = last?.folderId ?? last?.id ?? last ?? null;
-        }
-      } catch {}
-    }
-  }
+  // Determine the folderId to probe — either an explicit --folderId or the id just created above
+  let targetFolderId = folderIdArg ?? probeCreatedFolderId;
 
-  if (!targetFolderId && !createDraft) {
-    record("5. pollUntilSigned (--probe-download needs --folderId or --create-draft)", "skip", "pass --folderId <id> or add --create-draft");
-    record("6. download routes (--probe-download)", "skip", "no folderId to probe");
+  if (!targetFolderId) {
+    record("5. pollUntilSigned (--probe-download needs --folderId or --create-draft)", "skip", "pass --folderId <id> or add --create-draft (and ensure draft creation succeeded)");
+    record("6. download routes (--probe-download)", "skip", "no folderId to probe — draft may have failed, check steps 2–3 above");
   } else {
-    // Use the folderId captured from draft creation if available and no explicit arg given
-    if (!targetFolderId) {
-      // The --create-draft block above logged folderId=... — use that value if we captured it
-      // The outer `folderId` is block-scoped, so fall back to undefined and skip gracefully
-      record("5. pollUntilSigned", "skip", "no folderId captured — re-run with --folderId");
-      record("6. download routes", "skip", "no folderId captured");
-    } else {
       const fid = String(targetFolderId);
       // Test poll: one immediate myfolder check, then bounded poll for EXECUTED (short window in probe)
       // This proves the route exists and names the current terminal state for audit/demo script.
@@ -352,7 +319,6 @@ if (probeDownload) {
       }
     }
   }
-}
 
 // --- verdict --------------------------------------------------------------
 
