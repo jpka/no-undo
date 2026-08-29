@@ -15,14 +15,14 @@ One prompt in, signed document out. Every reversible step runs unattended. The o
 Nobody else in this hackathon will demo a crash.
 
 ```
-$ node agent/esign-agent-loop.mjs --auto-approve "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+$ node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 [agent] Creating draft folder…
 [agent] Draft: folderId=fld_abc123 planToken=pln_…
 [agent] Auto-approved (no human interaction)
 [agent] beginExecute…
 # ← process dies here (NO_UNDO_CRASH_AFTER_FSYNC=1)
 # restart
-$ node agent/esign-agent-loop.mjs --auto-approve "Take this freight invoice…"
+$ node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice…"
 [agent] Recovered 1 stuck-executing plan(s) (outcome unknown, reconciled on load):
   - planToken=pln_… folderId=fld_abc123 → folderStatus=SHARED → confirmed executed
 [agent] Result: { "status": "executed" }
@@ -87,12 +87,12 @@ npm install
 #    FOXIT_CLIENT_ID=...
 #    FOXIT_CLIENT_SECRET=...
 
-# 2. Run the full pipeline against the live Foxit APIs
+# 2. Run the full pipeline against the live Foxit APIs (prompt parsing + Nutrient enrichment)
 source .env
-node agent/esign-agent-loop.mjs --auto-approve "Send the ACME invoice to alice@example.com and bob@example.com for signature."
+node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 
-# 3. Or run offline with fixture mode (no credentials needed)
-NO_FOXIT_MCP=1 node agent/esign-agent-loop.mjs --auto-approve "Send the ACME invoice to alice@example.com and bob@example.com for signature."
+# 3. Or use fixture mode for PDF assembly (Foxit eSign credentials still required for the gateway — source .env first)
+NO_FOXIT_MCP=1 source .env && node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 ```
 
 ### Path B — Full pipeline (Foxit + Nutrient)
@@ -106,7 +106,7 @@ NO_FOXIT_MCP=1 node agent/esign-agent-loop.mjs --auto-approve "Send the ACME inv
 
 # 2. Run with Nutrient enrichment
 source .env
-node agent/esign-agent-loop.mjs --auto-approve "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
 ```
 
 ### Run the test suite
