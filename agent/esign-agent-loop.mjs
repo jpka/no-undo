@@ -32,8 +32,11 @@ import {
   confirmEsignExecuted,
   confirmEsignFailed,
   listExecutingPlans,
+  pollUntilSigned,
+  downloadSignedDocument,
 } from "../mcp/foxit/esign-adapter.mjs";
 import { parsePrompt } from "../mcp/foxit/prompt-parser.mjs";
+import { writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -115,6 +118,10 @@ export async function runFromPrompt(prompt, options = {}) {
     promptExcerpt: parsed.promptExcerpt,
     promptInstructions: parsed.instructions,
     promptDocSource: parsed.docSource,
+    pollForSigned: options.pollForSigned,
+    pollTimeoutMs: options.pollTimeoutMs,
+    downloadSigned: options.downloadSigned,
+    signedOutputPath: options.signedOutputPath,
   });
 }
 
@@ -173,6 +180,10 @@ export async function runAgentLoop({
   promptExcerpt = null,
   promptInstructions = null,
   promptDocSource = null,
+  pollForSigned = false,
+  pollTimeoutMs = 30_000,
+  downloadSigned = false,
+  signedOutputPath = null,
 }) {
   const resolvedJournal =
     journalPath ?? resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
@@ -269,6 +280,44 @@ export async function runAgentLoop({
       if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
       console.error("[agent] Send succeeded — plan executed");
       result = { planToken, folderId, status: "executed" };
+      // Optional post-send polling for the signed document (EXECUTED + download).
+      // Off by default so existing tests/CI remain fast; enabled with
+      // pollForSigned or downloadSigned. The send is already idempotent and
+      // audit-logged — polling never re-sends, only waits for the signers to
+      // finish and then fetches the signed PDF. Persist folderId+status so a
+      // restart can resume polling without re-sending (see pollUntilSigned).
+      if (pollForSigned || downloadSigned) {
+        console.error(`[agent] Polling for signed state (EXECUTED) — timeout ${pollTimeoutMs}ms ...`);
+        const polled = await pollUntilSigned(folderId, { timeoutMs: pollTimeoutMs, intervalMs: 2000 });
+        result.poll = { status: polled.status, executed: polled.executed, attempts: polled.attempts, elapsedMs: polled.elapsedMs };
+        if (polled.executed) {
+          console.error(`[agent] Folder reached EXECUTED after ${polled.attempts} poll(s)`);
+          if (downloadSigned) {
+            const dl = await downloadSignedDocument(folderId, { docNumber: 0 });
+            if (dl.ok && dl.bytes) {
+              const outPath = signedOutputPath ?? resolve(dirname(resolvedJournal), `signed-${folderId}.pdf`);
+              try {
+                writeFileSync(outPath, dl.bytes);
+                console.error(`[agent] Signed PDF written: ${outPath} (${dl.bytes.length} bytes)`);
+                result.signedPdfPath = outPath;
+                result.signedBytesLen = dl.bytes.length;
+              } catch (e) {
+                console.error(`[agent] Failed to write signed PDF: ${e}`);
+                result.downloadError = String(e);
+              }
+            } else {
+              const msg = dl.transportError ? `transport error: ${dl.text}` : `download failed HTTP ${dl.status}: ${dl.text?.slice(0,120)}`;
+              console.error(`[agent] Signed PDF download failed: ${msg}`);
+              result.downloadError = msg;
+            }
+          }
+        } else {
+          console.error(`[agent] Poll timed out after ${polled.attempts} attempt(s), last status=${polled.status ?? "null"} — not yet EXECUTED`);
+          // Do not treat as execution failure: the send succeeded (SHARED), the document is merely not yet signed.
+          // The folderId is persisted, so a later run can resume polling via pollUntilSigned or the --probe-download path.
+          result.note = `sent for signature (status ${polled.status ?? "unknown"}), not yet EXECUTED`;
+        }
+      }
     } else if (send.transportError) {
       // Ambiguous — may have been applied before the connection broke.
       // Leave executing and let reconcile decide; do not confirmFailed.
@@ -304,13 +353,17 @@ export async function runAgentLoop({
 async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
+  const pollForSigned = args.includes("--poll-signed");
+  const downloadSigned = args.includes("--download-signed") || pollForSigned;
+  const pollTimeoutIdx = args.indexOf("--poll-timeout");
+  const pollTimeoutMs = pollTimeoutIdx >= 0 ? Number(args[pollTimeoutIdx + 1]) : undefined;
   const promptIdx = args.indexOf("--prompt");
   let prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
   if (prompt?.startsWith("--")) prompt = null;
 
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove });
+    result = await runFromPrompt(prompt, { autoApprove, pollForSigned, downloadSigned, pollTimeoutMs });
   } else {
     const folderName = args.find((a) => !a.startsWith("--")) ?? "demo-contract";
     result = await runAgentLoop({
@@ -320,6 +373,9 @@ async function main() {
         { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
       ],
       autoApprove,
+      pollForSigned,
+      pollTimeoutMs,
+      downloadSigned,
     });
   }
   console.error("[agent] Result:", JSON.stringify(result, null, 2));

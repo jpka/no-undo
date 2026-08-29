@@ -20,6 +20,8 @@
  *   set -a; . ./.env; set +a
  *   node mcp/foxit/esign-probe.mjs              # read-only checks (1 and 4 only)
  *   node mcp/foxit/esign-probe.mjs --create-draft # also does 2 and 3
+ *   node mcp/foxit/esign-probe.mjs --probe-download --create-draft  # also probes download routes + poll until EXECUTED
+ *   node mcp/foxit/esign-probe.mjs --probe-download --folderId 12345 # poll+download against existing folder (no creation)
  *
  * SAFETY: --create-draft only ever sends sendNow:false. This script never
  * sends a document for signature. There is no code path here that does.
@@ -40,6 +42,12 @@ if (!clientId || !clientSecret) {
 }
 
 const createDraft = process.argv.includes("--create-draft");
+const probeDownload = process.argv.includes("--probe-download");
+const folderIdArg = (() => {
+  const i = process.argv.indexOf("--folderId");
+  return i >= 0 ? process.argv[i + 1] : null;
+})();
+let probeCreatedFolderId = null;
 const results = [];
 
 /** Records a test result with its name, verdict (ok/fail/skip), and optional detail message. */
@@ -201,6 +209,7 @@ if (!createDraft) {
     create.json?.folderId ??
     create.json?.data?.folderId ??
     null;
+  if (folderId) probeCreatedFolderId = String(folderId);
 
   record(
     "2. createfolder(sendNow:false) returns folderId",
@@ -231,6 +240,85 @@ if (!createDraft) {
     record("3. folderStatus === DRAFT", "skip", "no folderId to query");
   }
 }
+
+// --- 5 + 6. Download + poll-until-EXECUTED (PLANNED Aug 29-30 C) ----------
+if (probeDownload) {
+  // Determine the folderId to probe — either an explicit --folderId or the id just created above
+  let targetFolderId = folderIdArg ?? probeCreatedFolderId;
+
+  if (!targetFolderId) {
+    record("5. pollUntilSigned (--probe-download needs --folderId or --create-draft)", "skip", "pass --folderId <id> or add --create-draft (and ensure draft creation succeeded)");
+    record("6. download routes (--probe-download)", "skip", "no folderId to probe — draft may have failed, check steps 2–3 above");
+  } else {
+      const fid = String(targetFolderId);
+      // Test poll: one immediate myfolder check, then bounded poll for EXECUTED (short window in probe)
+      // This proves the route exists and names the current terminal state for audit/demo script.
+      const beforePoll = await req(
+        `${GATEWAY}/esign/api/v1/folders/myfolder?folderId=${encodeURIComponent(fid)}`,
+        { headers: gatewayHeaders() },
+      );
+      const curStatus =
+        beforePoll.json?.folder?.folderStatus ??
+        beforePoll.json?.data?.folder?.folderStatus ??
+        beforePoll.json?.folderStatus ??
+        null;
+      const isExecuted = curStatus === "EXECUTED";
+      const isShared = curStatus === "SHARED";
+      const isDraft = curStatus === "DRAFT";
+      // For the probe we do NOT block 60s — one check + up to 10s bounded retry (4 attempts at 2.5s)
+      let pollVerdict = "ok";
+      let pollDetail = `${summarize(beforePoll, 260)}\n       folderStatus=${curStatus ?? "(not found)"} — ${isExecuted ? "EXECUTED (signed, terminal)" : isShared ? "SHARED (sent, not signed — not terminal per Aug 27)" : isDraft ? "DRAFT (not sent)" : "unknown"}`;
+      if (!isExecuted && beforePoll.ok) {
+        // Quick bounded retry (10s) to see if it flips — useful when just self-signed
+        const deadline = Date.now() + 10_000;
+        let attempts = 0;
+        let last = curStatus;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2500));
+          attempts += 1;
+          const poll = await req(
+            `${GATEWAY}/esign/api/v1/folders/myfolder?folderId=${encodeURIComponent(fid)}`,
+            { headers: gatewayHeaders() },
+          );
+          const s =
+            poll.json?.folder?.folderStatus ??
+            poll.json?.data?.folder?.folderStatus ??
+            poll.json?.folderStatus ??
+            null;
+          last = s;
+          if (s === "EXECUTED") {
+            pollDetail += `\n       → EXECUTED after ${attempts} poll(s)`;
+            break;
+          }
+        }
+        if (last !== "EXECUTED") {
+          // Not an error — the probe is expected to run before signing completes.
+          // Report as ok with an informational note: confirms polling path works, terminal is EXECUTED.
+          pollDetail += `\n       (still ${last ?? "unknown"} after bounded retry — self-sign may still be pending; EXECUTED is the terminal to wait for)`;
+        }
+      }
+      if (!beforePoll.ok) pollVerdict = "fail";
+      record("5. pollUntilSigned / EXECUTED terminal state", pollVerdict, pollDetail);
+
+      // Test download routes — both must be non-404 to confirm vendor-named routes exist
+      // Single-document and envelope routes are binary PDF endpoints; a 4xx here (e.g. 403/400)
+      // still proves the route exists. Only 404 or network 0 means the endpoint is wrong.
+      for (const [label, dlUrl] of [
+        ["single document", `${GATEWAY}/esign/api/v1/folders/document/download?folderId=${encodeURIComponent(fid)}&docNumber=0`],
+        ["envelope", `${GATEWAY}/esign/api/v1/folders/download?folderId=${encodeURIComponent(fid)}`],
+      ]) {
+        const r = await req(dlUrl, { headers: gatewayHeaders() });
+        const exists = r.status !== 0 && r.status !== 404;
+        // Treat 404 as fail (route not found), anything else as ok (route exists, even if not yet signed)
+        const bodyPreview = r.json ? JSON.stringify(redactJson(r.json)).slice(0, 200) : redactString(r.text).slice(0, 200);
+        record(
+          `6. download route (${label})`,
+          exists ? "ok" : "fail",
+          `${summarize(r, 260)}${exists ? "  (non-404 => route exists)" : "  (404 => route not found — check docs/foxit-contact-aug27.md §2/§4a)"} — body: ${bodyPreview}`,
+        );
+      }
+    }
+  }
 
 // --- verdict --------------------------------------------------------------
 

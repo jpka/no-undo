@@ -78,14 +78,18 @@ function gatewayHeaders(extra = {}) {
 /**
  * @param {string} url
  * @param {RequestInit} [init]
+ * @param {number} [timeoutMs=30_000]
  * @returns {Promise<{ok: boolean, status: number, text: string, json: any, ms: number, transportError: boolean}>}
  */
-async function req(url, init = {}) {
+async function req(url, init = {}, timeoutMs = 30_000) {
   const started = Date.now();
+  // Merge caller's signal (if any) with our timeout — caller's signal wins if already aborted
+  const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
+  const { signal: _ignored, ...restInit } = init;
   try {
     const res = await fetch(url, {
-      ...init,
-      signal: AbortSignal.timeout(30_000),
+      ...restInit,
+      signal,
       redirect: "error", // don't follow redirects — could leak credentials to untrusted hosts
     });
     const text = await res.text();
@@ -210,6 +214,7 @@ class DurableStore {
 // Module-level durable stores — initialized by createEsignStore / loadEsignStore.
 let tokenToFolder = null;
 let processedEvents = null;
+let pollState = null;
 
 /**
  * Initialize durable stores alongside the journal file.
@@ -220,6 +225,7 @@ function initDurableStores(journalPath) {
   const baseDir = dirname(journalPath);
   tokenToFolder = new DurableStore(join(baseDir, ".token-map.json"));
   processedEvents = new DurableStore(join(baseDir, ".webhook-dedup.json"));
+  pollState = new DurableStore(join(baseDir, ".poll-state.json"));
 }
 
 // --- Webhook dedup ----------------------------------------------------------
@@ -248,22 +254,164 @@ function markWebhookProcessed(folderId, eventName) {
 
 /**
  * Check folderStatus on the gateway. Returns:
- *   - "SHARED" → the folder was sent (side effect happened)
+ *   - "EXECUTED" → all required signing completed and digital signatures applied (terminal, signed)
+ *   - "SHARED" → the folder was sent for signature (sent, not yet signed — see Foxit Aug 27 contact)
  *   - "DRAFT" → the folder is still a draft (side effect did NOT happen)
- *   - null → could not determine (unknown)
+ *   - null → could not determine (unknown / transport error)
+ * Per Aug 27 Foxit contact §4a: EXECUTED is the only terminal signed state;
+ * SHARED, folder_completed and the signing redirect must NOT be treated as signed.
  * @param {string} folderId
  * @returns {Promise<string|null>}
  */
-export async function checkFolderStatus(folderId) {
+export async function checkFolderStatus(folderId, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
   const r = await req(
     `${GATEWAY}/esign/api/v1/folders/myfolder?folderId=${encodeURIComponent(folderId)}`,
     { headers: gatewayHeaders() },
+    timeoutMs,
   );
   if (!r.ok) return null;
   const j = r.json;
   const folder = j?.folder;
   const status = folder?.folderStatus;
   return typeof status === "string" ? status : null;
+}
+
+/**
+ * Returns true iff the given folderStatus represents a signed, fully-executed
+ * envelope. Only EXECUTED counts — SHARED means sent, not signed.
+ * @param {string|null} status
+ * @returns {boolean}
+ */
+export function isExecutedStatus(status) {
+  return status === "EXECUTED";
+}
+
+/**
+ * Returns true iff the given folderStatus represents a sent envelope (SHARED
+ * or EXECUTED). EXECUTED implies sent, so callers that only care about
+ * "did the send happen" (idempotency / reconcile) treat both as done.
+ * @param {string|null} status
+ * @returns {boolean}
+ */
+export function isSentStatus(status) {
+  return status === "SHARED" || status === "EXECUTED";
+}
+
+// --- Signed-document download ------------------------------------------------
+
+/**
+ * Download the signed PDF bytes for a folder that has reached EXECUTED.
+ * Two routes, per Foxit Aug 27 contact:
+ *   1. Single document: GET /esign/api/v1/folders/document/download?folderId=&docNumber=
+ *   2. Full envelope : GET /esign/api/v1/folders/download?folderId=
+ * Both are binary responses (PDF bytes), not JSON.
+ * This helper hits (1) when docNumber is provided and (2) otherwise.
+ * @param {string} folderId
+ * @param {{docNumber?: number|string|null, timeoutMs?: number}} [options]
+ * @returns {Promise<{ok: boolean, status: number, bytes?: Uint8Array, transportError: boolean, text?: string}>}
+ */
+export async function downloadSignedDocument(folderId, options = {}) {
+  const docNumber = options.docNumber ?? null;
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const url =
+    docNumber === null || docNumber === undefined
+      ? `${GATEWAY}/esign/api/v1/folders/download?folderId=${encodeURIComponent(folderId)}`
+      : `${GATEWAY}/esign/api/v1/folders/document/download?folderId=${encodeURIComponent(folderId)}&docNumber=${encodeURIComponent(String(docNumber))}`;
+  try {
+    const res = await fetch(url, {
+      headers: gatewayHeaders(),
+      signal: AbortSignal.timeout(timeoutMs),
+      redirect: "error",
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, status: res.status, transportError: false, text };
+    }
+    const buf = await res.arrayBuffer();
+    return { ok: true, status: res.status, bytes: new Uint8Array(buf), transportError: false };
+  } catch (err) {
+    return { ok: false, status: 0, transportError: true, text: String(err) };
+  }
+}
+
+/**
+ * Convenience wrapper for single-document download route (explicit docNumber).
+ * @param {string} folderId
+ * @param {number|string} docNumber
+ * @param {{timeoutMs?: number}} [options]
+ * @returns {Promise<{ok: boolean, status: number, bytes?: Uint8Array, transportError: boolean, text?: string}>}
+ */
+export async function downloadSingleDocument(folderId, docNumber, options = {}) {
+  return downloadSignedDocument(folderId, { ...options, docNumber });
+}
+
+/**
+ * Convenience wrapper for full-envelope download route (no docNumber).
+ * @param {string} folderId
+ * @param {{timeoutMs?: number}} [options]
+ * @returns {Promise<{ok: boolean, status: number, bytes?: Uint8Array, transportError: boolean, text?: string}>}
+ */
+export async function downloadEnvelope(folderId, options = {}) {
+  return downloadSignedDocument(folderId, { ...options, docNumber: null });
+}
+
+// --- Polling for signed state ------------------------------------------------
+
+/**
+ * Poll `GET /esign/api/v1/folders/myfolder?folderId=` with bounded backoff
+ * until `folderStatus === "EXECUTED"`, then return. Persists the last
+ * observed status in the durable `.poll-state.json` so a restart mid-poll
+ * can resume without re-sending.
+ *
+ * Transport errors and non-EXECUTED statuses are treated as "keep polling"
+ * until the deadline. Only EXECUTED is terminal; SHARED/DRAFT/null all
+ * continue polling. This matches the Foxit Aug 27 guidance: poll-until-EXECUTED
+ * with a timeout, not poll-until-SHARED.
+ *
+ * @param {string} folderId
+ * @param {{timeoutMs?: number, intervalMs?: number}} [options] - timeoutMs defaults to 30s, intervalMs to 2000ms
+ * @returns {Promise<{status: string|null, executed: boolean, attempts: number, elapsedMs: number}>}
+ */
+export async function pollUntilSigned(folderId, options = {}) {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const intervalMs = options.intervalMs ?? 2000;
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let attempts = 0;
+  let lastStatus = null;
+
+  while (Date.now() < deadline) {
+    attempts += 1;
+    const remainingForReq = Math.max(0, deadline - Date.now());
+    if (remainingForReq <= 0) break;
+    // Bound the network request to the remaining poll budget so a stalled
+    // gateway call cannot overrun the caller's --poll-timeout.
+    const status = await checkFolderStatus(folderId, { timeoutMs: Math.min(30_000, remainingForReq) });
+    lastStatus = status;
+    try {
+      pollState?.set(folderId, { status, updatedAt: new Date().toISOString(), attempts });
+    } catch {
+      // pollState persistence is best-effort; polling continues even if it fails
+    }
+    if (status === "EXECUTED") {
+      return { status, executed: true, attempts, elapsedMs: Date.now() - started };
+    }
+    const now = Date.now();
+    const remaining = deadline - now;
+    if (remaining <= 0) break;
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, remaining)));
+  }
+  return { status: lastStatus, executed: false, attempts, elapsedMs: Date.now() - started };
+}
+
+/**
+ * Read the last observed poll status for a folder from durable state.
+ * @param {string} folderId
+ * @returns {{status: string|null, updatedAt?: string, attempts?: number}|null}
+ */
+export function getPollState(folderId) {
+  return pollState?.get(folderId) ?? null;
 }
 
 // --- Send-draft call ---------------------------------------------------------
@@ -342,7 +490,7 @@ export function createEsignStore(journalPath, options = {}) {
       const folderId = tokenToFolder?.get(planToken);
       if (!folderId) return "unknown";
       const status = await checkFolderStatus(folderId);
-      if (status === "SHARED") return "done";
+      if (isSentStatus(status)) return "done";
       if (status === "DRAFT") return "not-done";
       return "unknown";
     },
@@ -373,7 +521,7 @@ export async function loadEsignStore(journalPath, options = {}) {
       const folderId = tokenToFolder?.get(planToken);
       if (!folderId) return "unknown";
       const status = await checkFolderStatus(folderId);
-      if (status === "SHARED") return "done";
+      if (isSentStatus(status)) return "done";
       if (status === "DRAFT") return "not-done";
       return "unknown";
     },
@@ -638,9 +786,9 @@ export async function confirmEsignFailed(store, planToken, reason) {
     return { ok: false, error: "no folderId mapping — plan retained for reconciliation" };
   }
   const status = await checkFolderStatus(folderId);
-  if (status === "SHARED") {
-    // The send actually succeeded — releasing would allow a duplicate send.
-    return { ok: false, error: "folder status is SHARED — send succeeded, use confirmEsignExecuted" };
+  if (isSentStatus(status)) {
+    // The send actually succeeded (SHARED or EXECUTED) — releasing would allow a duplicate send.
+    return { ok: false, error: `folder status is ${status} — send succeeded, use confirmEsignExecuted` };
   }
   if (status === null) {
     // Unknown outcome — retain executing state for reconciliation.
