@@ -320,3 +320,68 @@ describe("CLI: --recipient without --prompt (issue #27 P1 fix)", () => {
     assert.doesNotMatch(stderr, /folderName="Juan Ka/);
   });
 });
+
+// --- CLI: --poll-timeout value not treated as folder name (Greptile P1) -----
+
+describe("CLI: --poll-timeout value not treated as folder name (Greptile P1 fix)", () => {
+  test("--poll-timeout value before folder name is not used as folder name", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const agentPath = join(__dirname, "..", "agent", "esign-agent-loop.mjs");
+    let stderr = "";
+    try {
+      execFileSync(
+        "node",
+        [
+          agentPath,
+          "--poll-timeout", "5000",
+          "my-folder",
+          "--auto-approve",
+        ],
+        {
+          env: {
+            ...process.env,
+            FOXIT_CLIENT_ID: "test-client-id",
+            FOXIT_CLIENT_SECRET: "test-client-secret",
+            NO_FOXIT_MCP: "1",
+          },
+          encoding: "utf8",
+          stdio: ["inherit", "inherit", "pipe"],
+        },
+      );
+    } catch (e) {
+      stderr = e.stderr ?? "";
+    }
+    // Should NOT have treated "5000" as the folder name.
+    assert.doesNotMatch(stderr, /folderName="5000"/);
+  });
+
+  test("--poll-timeout value alone is not treated as folder name", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const agentPath = join(__dirname, "..", "agent", "esign-agent-loop.mjs");
+    let stderr = "";
+    try {
+      execFileSync(
+        "node",
+        [
+          agentPath,
+          "--poll-timeout", "5000",
+          "--auto-approve",
+        ],
+        {
+          env: {
+            ...process.env,
+            FOXIT_CLIENT_ID: "test-client-id",
+            FOXIT_CLIENT_SECRET: "test-client-secret",
+            NO_FOXIT_MCP: "1",
+          },
+          encoding: "utf8",
+          stdio: ["inherit", "inherit", "pipe"],
+        },
+      );
+    } catch (e) {
+      stderr = e.stderr ?? "";
+    }
+    // Should NOT have treated "5000" as the folder name.
+    assert.doesNotMatch(stderr, /folderName="5000"/);
+  });
+});
