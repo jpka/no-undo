@@ -383,9 +383,10 @@ export async function pollUntilSigned(folderId, options = {}) {
 
   while (Date.now() < deadline) {
     attempts += 1;
-    const remainingForReq = Math.max(500, deadline - Date.now());
+    const remainingForReq = Math.max(0, deadline - Date.now());
+    if (remainingForReq <= 0) break;
     // Bound the network request to the remaining poll budget so a stalled
-    // gateway call cannot overrun the caller's --poll-timeout by 30s.
+    // gateway call cannot overrun the caller's --poll-timeout.
     const status = await checkFolderStatus(folderId, { timeoutMs: Math.min(30_000, remainingForReq) });
     lastStatus = status;
     try {
