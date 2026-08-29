@@ -72,6 +72,12 @@ function renderEsignPlan(plan) {
   if (promptInstructions) {
     details.push({ label: "Instructions", value: promptInstructions });
   }
+  // Foxit-assembled document digest (build-plan step 3: pdf_from_html bytes → SHA-256)
+  const documentSha256 = plan.extra?.documentSha256;
+  if (documentSha256) {
+    const via = plan.extra?.documentVia ? ` (via ${plan.extra.documentVia})` : "";
+    details.push({ label: "Document SHA-256", value: `${documentSha256}${via}` });
+  }
   details.push({ label: "Agent's reason", value: plan.reason || "(none given)" });
   details.push({
     label: "⚠️ Irreversible",
