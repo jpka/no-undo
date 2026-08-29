@@ -142,6 +142,7 @@ describe("single-pipeline (P6)", () => {
         {
           journalPath: j.path,
           autoApprove: true,
+          allowFixturePdf: true,
           recipients: [
             { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
             { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },
@@ -169,6 +170,7 @@ describe("single-pipeline (P6)", () => {
         {
           journalPath: j.path,
           autoApprove: true,
+          allowFixturePdf: true,
           recipients: [
             { firstName: "Alice", lastName: "Smith", email: "alice@example.com" },
             { firstName: "Bob", lastName: "Jones", email: "bob@example.com" },

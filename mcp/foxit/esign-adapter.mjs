@@ -704,7 +704,7 @@ export async function createEsignFolder(store, payload, options = {}) {
   // Persist token → folderId in durable store (CodeRabbit finding #2)
   tokenToFolder?.set(created.planToken, folderId);
 
-  return { planToken: created.planToken, folderId };
+  return { planToken: created.planToken, folderId, documentVia: pdfVia };
 }
 
 /**
@@ -760,9 +760,26 @@ export function maybeCrashAfterFsync(planToken) {
  * @param {EsignPayload} payload
  * @returns {{ok: true, planToken: string} | {ok: false, error: string, code?: string}}
  */
-export function beginEsignSend(store, planToken, payload) {
+export function beginEsignSend(store, planToken, payload, options = {}) {
   if (!payload) {
     return { ok: false, error: "payload is required for beginEsignSend" };
+  }
+
+  // Fixture-PDF guard (gh #28): refuse a fixture-sourced PDF on the live send
+  // path unless --allow-fixture-pdf is passed explicitly. The approval card
+  // renders documentVia, so the human sees "fixture" — but we refuse here too,
+  // because approval does not imply "I want to send a non-renderable draft".
+  // The TINY_PDF_BASE64 stub is accepted by Foxit as draft but not renderable;
+  // sending it to real signers is a bug, not a feature.
+  if (options.documentVia === "fixture" && !options.allowFixturePdf) {
+    return {
+      ok: false,
+      error:
+        "Fixture PDF (documentVia=fixture) cannot be sent live without --allow-fixture-pdf. " +
+        "The fallback PDF is accepted by Foxit as draft but not renderable — pass " +
+        "--allow-fixture-pdf only for deliberate smoke tests.",
+      code: "FIXTURE_PDF_REQUIRES_ALLOW_FLAG",
+    };
   }
 
   const result = store.beginExecute(planToken, payload);

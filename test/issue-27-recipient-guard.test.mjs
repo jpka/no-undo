@@ -219,6 +219,7 @@ describe("agent-loop: unresolved recipients guard (issue #27)", () => {
         {
           journalPath: j.path,
           autoApprove: true,
+          allowFixturePdf: true,
           recipients: [
             { firstName: "Juan", lastName: "Ka", email: "juan@real-domain.com" },
           ],
@@ -237,7 +238,7 @@ describe("agent-loop: unresolved recipients guard (issue #27)", () => {
     try {
       const result = await runFromPrompt(
         "Send the contract to alice@real-domain.com for signature",
-        { journalPath: j.path, autoApprove: true },
+        { journalPath: j.path, autoApprove: true, allowFixturePdf: true },
       );
       assert.equal(result.status, "executed");
     } finally {
@@ -298,6 +299,7 @@ describe("CLI: --recipient without --prompt (issue #27 P1 fix)", () => {
           "my-folder",
           "--recipient", "Juan Ka <juan@real-domain.com>",
           "--auto-approve",
+          "--allow-fixture-pdf",
         ],
         {
           env: {

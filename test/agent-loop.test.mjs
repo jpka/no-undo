@@ -106,9 +106,11 @@ describe("agent-loop integration", () => {
     const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
     const j = tmpJournal();
     try {
+      // allowFixturePdf: true because beforeEach sets NO_FOXIT_MCP=1 (fixture PDF).
+      // This test verifies prompt extra fields pass through, not the fixture guard.
       const result = await runFromPrompt(
         "Send the contract to alice@example.com for signature",
-        { journalPath: j.path, autoApprove: true },
+        { journalPath: j.path, autoApprove: true, allowFixturePdf: true },
       );
       assert.equal(result.status, "executed");
     } finally {
@@ -125,6 +127,50 @@ describe("agent-loop integration", () => {
         { journalPath: j.path, autoApprove: false, approvalTimeoutMs: 100 },
       );
       assert.equal(result.status, "awaiting_approval");
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  // --- gh #28 regression tests -------------------------------------------
+
+  test("fixture PDF (NO_FOXIT_MCP=1) is refused on live send without --allow-fixture-pdf", async () => {
+    // NO_FOXIT_MCP=1 is set in beforeEach → createEsignFolder uses fixture PDF.
+    // With live creds present (also set in beforeEach), the send path must refuse.
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    try {
+      const result = await runAgentLoop({
+        folderName: "fixture-guard-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        journalPath: j.path,
+        autoApprove: true,
+      });
+      assert.equal(result.status, "not_executed");
+      assert.equal(result.code, "FIXTURE_PDF_REQUIRES_ALLOW_FLAG");
+      assert.match(result.error, /fixture-pdf/i);
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  test("fixture PDF (NO_FOXIT_MCP=1) is allowed with --allow-fixture-pdf flag", async () => {
+    // Same scenario, but allowFixturePdf=true → send proceeds.
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    try {
+      const result = await runAgentLoop({
+        folderName: "fixture-allowed-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        journalPath: j.path,
+        autoApprove: true,
+        allowFixturePdf: true,
+      });
+      assert.equal(result.status, "executed");
     } finally {
       j.cleanup();
     }

@@ -225,6 +225,7 @@ export async function runFromPrompt(prompt, options = {}) {
     pollTimeoutMs: options.pollTimeoutMs,
     downloadSigned: options.downloadSigned,
     signedOutputPath: options.signedOutputPath,
+    allowFixturePdf: options.allowFixturePdf ?? false,
   });
 }
 
@@ -288,6 +289,7 @@ export async function runAgentLoop({
   pollTimeoutMs = 30_000,
   downloadSigned = false,
   signedOutputPath = null,
+  allowFixturePdf = false,
 }) {
   const resolvedJournal =
     journalPath ?? resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
@@ -342,8 +344,8 @@ export async function runAgentLoop({
     if (created.error) {
       throw new Error(`createfolder failed: ${created.error} (status ${created.status ?? "?"})`);
     }
-    const { planToken, folderId } = created;
-    console.error(`[agent] Draft: folderId=${folderId} planToken=${planToken.slice(0, 8)}…`);
+    const { planToken, folderId, documentVia } = created;
+    console.error(`[agent] Draft: folderId=${folderId} planToken=${planToken.slice(0, 8)}… documentVia=${documentVia}`);
 
     if (autoApprove) {
       const a = store.approve(planToken);
@@ -387,9 +389,12 @@ export async function runAgentLoop({
     // Step 2: Transition to executing. This fsyncs "executing" to the journal
     // BEFORE the gateway call — the crash injection point is inside here.
     console.error("[agent] beginExecute…");
-    const begin = beginEsignSend(store, planToken, payload);
+    const begin = beginEsignSend(store, planToken, payload, {
+      documentVia,
+      allowFixturePdf,
+    });
     if (!begin.ok) {
-      // PLAN_REJECTED, AWAITING_APPROVAL, EXPIRED, etc. — human rejected or race
+      // PLAN_REJECTED, AWAITING_APPROVAL, EXPIRED, FIXTURE_PDF_REQUIRES_ALLOW_FLAG, etc.
       return { planToken, folderId, status: "not_executed", error: begin.error, code: begin.code };
     }
     console.error("[agent] Plan is executing — calling gateway sendDraftFolder…");
@@ -474,6 +479,7 @@ export async function runAgentLoop({
 async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
+  const allowFixturePdf = args.includes("--allow-fixture-pdf");
   const pollForSigned = args.includes("--poll-signed");
   const downloadSigned = args.includes("--download-signed") || pollForSigned;
   const pollTimeoutIdx = args.indexOf("--poll-timeout");
@@ -494,7 +500,7 @@ async function main() {
 
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
+    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
   } else {
     // Skip flag values when looking for the folder name (e.g. --recipient
     // "Name <addr>" should not be treated as the folder name).
@@ -512,6 +518,7 @@ async function main() {
       folderName,
       recipients,
       autoApprove,
+      allowFixturePdf,
       pollForSigned,
       pollTimeoutMs,
       downloadSigned,
