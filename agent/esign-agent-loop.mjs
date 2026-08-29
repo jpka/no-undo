@@ -498,7 +498,7 @@ async function main() {
   } else {
     // Skip flag values when looking for the folder name (e.g. --recipient
     // "Name <addr>" should not be treated as the folder name).
-    const flagArgs = new Set(["--prompt", "--recipient"]);
+    const flagArgs = new Set(["--prompt", "--recipient", "--poll-timeout"]);
     const folderName = args.find((a, i) => !a.startsWith("--") && !flagArgs.has(args[i - 1])) ?? "demo-contract";
     // Explicit --recipient overrides apply even without --prompt: use them
     // instead of the unresolved fallback recipients (which would be refused).
