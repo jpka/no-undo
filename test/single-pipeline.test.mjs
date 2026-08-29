@@ -176,4 +176,40 @@ describe("single-pipeline (P6)", () => {
     assert.ok(rendered.details.some((d) => d.label === "Nutrient enrichment" && d.value.includes("wired")));
     assert.ok(rendered.details.some((d) => d.label === "Document SHA-256"));
   });
+
+  test("createEsignFolder threads pdfBytes through (no discarded staged bytes)", async () => {
+    // P6 Greptile P1 follow-up: when enrichment resolves source bytes, they must
+    // be threaded into Foxit assembly so the approval card describes exactly what
+    // Foxit sends — not a freshly assembled invoice.
+    const { createEsignFolder } = await import("../mcp/foxit/esign-adapter.mjs");
+    const { renderEsignPlan } = await import("../agent/esign-agent-loop.mjs");
+    const { loadEsignStore } = await import("../mcp/foxit/esign-adapter.mjs");
+    const j = tmpJournal();
+    // Use a tiny valid PDF as the "enriched source bytes"
+    const tinyPdfBase64 =
+      "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAw" +
+      "IG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8" +
+      "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
+      "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
+    const pdfBytes = Buffer.from(tinyPdfBase64, "base64");
+    try {
+      const store = await loadEsignStore(j.path);
+      const result = await createEsignFolder(
+        store,
+        { folderName: "Enriched Doc", recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }] },
+        { pdfBytes, extra: { nutrientSummary: "Nutrient enrichment wired — 4 bytes" } },
+      );
+      assert.ok(result.planToken, "planToken present");
+      // Verify the plan's extra shows enriched-source via (the bytes were threaded, not discarded)
+      const pending = store.listPending();
+      assert.equal(pending.length, 1);
+      const rendered = renderEsignPlan(pending[0]);
+      assert.ok(rendered.details.some((d) => d.label === "Nutrient enrichment"));
+      const viaDetail = rendered.details.find((d) => d.label === "Document SHA-256");
+      assert.ok(viaDetail, "Document SHA-256 detail present");
+      assert.match(viaDetail.value, /enriched-source/, "documentVia should be enriched-source when pdfBytes threaded");
+    } finally {
+      j.cleanup();
+    }
+  });
 });

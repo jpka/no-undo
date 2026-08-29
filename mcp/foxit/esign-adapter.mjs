@@ -592,35 +592,56 @@ export async function createEsignFolder(store, payload, options = {}) {
   let pdfBase64 = fallbackPdfBase64;
   let pdfSha256 = fallbackPdfSha256;
   let pdfVia = "fixture";
-  try {
-    const assembled = await assemble(payload, {
-      html: options.pdfHtml ?? undefined,
-      timeoutMs: options.pdfTimeoutMs ?? undefined,
-    });
-    if (assembled?.base64) {
-      // Validate base64 and compute digest before accepting bytes — prevents
-      // pairing invalid payload with fixture digest (Greptile P1)
-      const computedSha = sha256Base64(assembled.base64);
-      pdfBase64 = assembled.base64;
-      pdfSha256 = computedSha;
-      pdfVia = assembled.via ?? "foxit-mcp";
-    }
-  } catch (e) {
-    // Fixture mode (NO_FOXIT_MCP or missing creds) already returns fixture without throwing.
-    // Live credentials + MCP failure should fail closed — don't silently send wrong doc.
-    const forceFixture =
-      process.env.NO_FOXIT_MCP === "1" ||
-      process.env.FOXIT_PDF_FIXTURE === "1" ||
-      process.env.FOXIT_PDF_FORCE_MCP === "0";
-    const hasCreds = Boolean(
-      (process.env.FOXIT_CLIENT_ID && process.env.FOXIT_CLIENT_SECRET) ||
-        (process.env.FOXIT_CLOUD_API_CLIENT_ID && process.env.FOXIT_CLOUD_API_CLIENT_SECRET)
-    );
-    if (forceFixture || !hasCreds) {
-      console.error(`[esign-adapter] PDF assembly threw — using fixture: ${e instanceof Error ? e.message : String(e)}`);
-    } else {
-      console.error(`[esign-adapter] PDF assembly failed (live creds): ${e instanceof Error ? e.message : String(e)}`);
-      return { error: `pdf assembly failed: ${e instanceof Error ? e.message : String(e)}`, status: 0 };
+
+  // P6 single-pipeline: if the caller (agent loop's Nutrient enrichment)
+  // already resolved source bytes, thread them straight through — the
+  // approval card describes exactly what Foxit sends, no discarded bytes.
+  if (options.pdfBytes) {
+    try {
+      const buf = Buffer.isBuffer(options.pdfBytes)
+        ? options.pdfBytes
+        : options.pdfBytes instanceof Uint8Array
+          ? Buffer.from(options.pdfBytes)
+          : null;
+      if (buf && buf.length > 0) {
+        pdfBase64 = buf.toString("base64");
+        pdfSha256 = sha256Base64(pdfBase64);
+        pdfVia = "enriched-source";
+      }
+    } catch { /* fall through to assembly */ }
+  }
+
+  if (pdfVia !== "enriched-source") {
+    try {
+      const assembled = await assemble(payload, {
+        html: options.pdfHtml ?? undefined,
+        timeoutMs: options.pdfTimeoutMs ?? undefined,
+      });
+      if (assembled?.base64) {
+        // Validate base64 and compute digest before accepting bytes — prevents
+        // pairing invalid payload with fixture digest (Greptile P1)
+        const computedSha = sha256Base64(assembled.base64);
+        pdfBase64 = assembled.base64;
+        pdfSha256 = computedSha;
+        pdfVia = assembled.via ?? "foxit-mcp";
+      }
+    } catch (e) {
+      // Fixture mode (NO_FOXIT_MCP or missing creds) already returns fixture without throwing.
+      // Live credentials + MCP failure should fail closed — don't silently send wrong doc.
+      const forceFixture =
+        process.env.NO_FOXIT_MCP === "1" ||
+        process.env.FOXIT_PDF_FIXTURE === "1" ||
+        process.env.FOXIT_PDF_FORCE_MCP === "0";
+      const hasCreds = Boolean(
+        (process.env.FOXIT_CLIENT_ID && process.env.FOXIT_CLIENT_SECRET) ||
+          (process.env.FOXIT_CLOUD_API_CLIENT_ID && process.env.FOXIT_CLOUD_API_CLIENT_SECRET)
+      );
+      if (forceFixture || !hasCreds) {
+        console.error(`[esign-adapter] PDF assembly threw — using fixture: ${e instanceof Error ? e.message : String(e)}`);
+      } else {
+        console.error(`[esign-adapter] PDF assembly failed (live creds): ${e instanceof Error ? e.message : String(e)}`);
+        return { error: `pdf assembly failed: ${e instanceof Error ? e.message : String(e)}`, status: 0 };
+      }
     }
   }
   // Call Foxit eSign to create the draft folder
