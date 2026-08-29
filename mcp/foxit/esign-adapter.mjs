@@ -450,13 +450,11 @@ export async function createEsignFolder(store, payload, options = {}) {
       timeoutMs: options.pdfTimeoutMs ?? undefined,
     });
     if (assembled?.base64) {
+      // Validate base64 and compute digest before accepting bytes — prevents
+      // pairing invalid payload with fixture digest (Greptile P1)
+      const computedSha = sha256Base64(assembled.base64);
       pdfBase64 = assembled.base64;
-      // Recompute SHA-256 from the actual bytes sent — don't trust injected sha256
-      try {
-        pdfSha256 = sha256Base64(assembled.base64);
-      } catch {
-        pdfSha256 = fallbackPdfSha256;
-      }
+      pdfSha256 = computedSha;
       pdfVia = assembled.via ?? "foxit-mcp";
     }
   } catch (e) {

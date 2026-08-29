@@ -163,14 +163,28 @@ export async function assemblePdf(payload, options = {}) {
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
     const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
 
-    const env = {
-      ...process.env,
-      FOXIT_CLOUD_API_CLIENT_ID: process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID,
-      FOXIT_CLOUD_API_CLIENT_SECRET: process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET,
-      ...(process.env.FOXIT_CLOUD_API_HOST ? { FOXIT_CLOUD_API_HOST: process.env.FOXIT_CLOUD_API_HOST } : {}),
-    };
-    // Remove undefined-stringified entries (when HOST not set)
-    for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
+    const allowedEnvKeys = [
+      "PATH",
+      "PATHEXT",
+      "HOME",
+      "TMPDIR",
+      "TMP",
+      "TEMP",
+      "SYSTEMROOT",
+      "SYSTEMDRIVE",
+      "NODE_ENV",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "TERM",
+    ];
+    const env = {};
+    for (const k of allowedEnvKeys) {
+      if (process.env[k] !== undefined) env[k] = process.env[k];
+    }
+    env.FOXIT_CLOUD_API_CLIENT_ID = process.env.FOXIT_CLOUD_API_CLIENT_ID ?? process.env.FOXIT_CLIENT_ID;
+    env.FOXIT_CLOUD_API_CLIENT_SECRET = process.env.FOXIT_CLOUD_API_CLIENT_SECRET ?? process.env.FOXIT_CLIENT_SECRET;
+    if (process.env.FOXIT_CLOUD_API_HOST) env.FOXIT_CLOUD_API_HOST = process.env.FOXIT_CLOUD_API_HOST;
 
     transport = new StdioClientTransport({
       command: process.execPath,
