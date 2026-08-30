@@ -106,9 +106,11 @@ describe("agent-loop integration", () => {
     const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
     const j = tmpJournal();
     try {
+      // allowFixturePdf: true because beforeEach sets NO_FOXIT_MCP=1 (fixture PDF).
+      // This test verifies prompt extra fields pass through, not the fixture guard.
       const result = await runFromPrompt(
         "Send the contract to alice@example.com for signature",
-        { journalPath: j.path, autoApprove: true },
+        { journalPath: j.path, autoApprove: true, allowFixturePdf: true },
       );
       assert.equal(result.status, "executed");
     } finally {
@@ -125,6 +127,75 @@ describe("agent-loop integration", () => {
         { journalPath: j.path, autoApprove: false, approvalTimeoutMs: 100 },
       );
       assert.equal(result.status, "awaiting_approval");
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  // --- gh #28 regression tests -------------------------------------------
+
+  test("fixture PDF (NO_FOXIT_MCP=1) is refused on live send without --allow-fixture-pdf", async () => {
+    // NO_FOXIT_MCP=1 is set in beforeEach → createEsignFolder uses fixture PDF.
+    // With live creds present (also set in beforeEach), the send path must refuse.
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    try {
+      const result = await runAgentLoop({
+        folderName: "fixture-guard-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        journalPath: j.path,
+        autoApprove: true,
+      });
+      assert.equal(result.status, "not_executed");
+      assert.equal(result.code, "FIXTURE_PDF_REQUIRES_ALLOW_FLAG");
+      assert.match(result.error, /fixture-pdf/i);
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  test("fixture PDF guard reads persisted documentVia — caller cannot bypass by omitting options", async () => {
+    // Greptile P1: guard must read authoritative provenance from the plan's
+    // persisted extra, not from caller options. A malicious/naive MCP client
+    // that calls beginEsignSend without passing documentVia must still be refused.
+    const { createEsignStore, createEsignFolder, beginEsignSend } = await import("../mcp/foxit/esign-adapter.mjs");
+    const j = tmpJournal();
+    try {
+      const store = createEsignStore(j.path);
+      const payload = {
+        folderName: "bypass-test",
+        recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }],
+      };
+      const { planToken } = await createEsignFolder(store, payload);
+      store.approve(planToken);
+
+      // Caller omits options entirely — must still be refused because the
+      // guard reads documentVia from the plan's persisted extra.
+      const result = beginEsignSend(store, planToken, payload);
+      assert.equal(result.ok, false);
+      assert.equal(result.code, "FIXTURE_PDF_REQUIRES_ALLOW_FLAG");
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  test("fixture PDF (NO_FOXIT_MCP=1) is allowed with --allow-fixture-pdf flag", async () => {
+    // Same scenario, but allowFixturePdf=true → send proceeds.
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    try {
+      const result = await runAgentLoop({
+        folderName: "fixture-allowed-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        journalPath: j.path,
+        autoApprove: true,
+        allowFixturePdf: true,
+      });
+      assert.equal(result.status, "executed");
     } finally {
       j.cleanup();
     }

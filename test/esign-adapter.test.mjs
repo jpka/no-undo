@@ -137,7 +137,8 @@ describe("esign-adapter", () => {
       };
       const { planToken } = await createEsignFolder(store, payload);
       // Try to begin without approval — should fail
-      const result = beginEsignSend(store, planToken, payload);
+      // allowFixturePdf: true so we test the approval requirement, not the fixture guard
+      const result = beginEsignSend(store, planToken, payload, { allowFixturePdf: true });
       assert.equal(result.ok, false);
       assert.match(result.error, /approval/i);
     } finally {
@@ -161,8 +162,8 @@ describe("esign-adapter", () => {
       const approveResult = store.approve(planToken);
       assert.ok(approveResult.ok);
 
-      // Begin execute
-      const beginResult = beginEsignSend(store, planToken, payload);
+      // Begin execute — allowFixturePdf: true (testing lifecycle, not fixture guard)
+      const beginResult = beginEsignSend(store, planToken, payload, { allowFixturePdf: true });
       assert.ok(beginResult.ok, `begin failed: ${beginResult.error}`);
 
       // Simulate successful gateway send — folder is now SHARED
@@ -193,7 +194,8 @@ describe("esign-adapter", () => {
       };
       const { planToken, folderId } = await createEsignFolder(store1, payload);
       store1.approve(planToken);
-      beginEsignSend(store1, planToken, payload);
+      // allowFixturePdf: true (testing crash recovery, not fixture guard)
+      beginEsignSend(store1, planToken, payload, { allowFixturePdf: true });
 
       // Verify it's executing
       const executingBefore = listExecutingPlans(store1);
@@ -235,7 +237,8 @@ describe("esign-adapter", () => {
         json: { result: "success", folder: { folderId, folderStatus: "SHARED" } },
       });
       store.approve(planToken);
-      beginEsignSend(store, planToken, payload);
+      // allowFixturePdf: true (testing adapter lifecycle, not fixture guard)
+      beginEsignSend(store, planToken, payload, { allowFixturePdf: true });
 
       // Try to confirmFailed — should refuse
       const result = await confirmEsignFailed(store, planToken, "network timeout");
@@ -274,7 +277,8 @@ describe("esign-adapter", () => {
       };
       const { planToken, folderId } = await createEsignFolder(store, payload);
       store.approve(planToken);
-      beginEsignSend(store, planToken, payload);
+      // allowFixturePdf: true (testing adapter lifecycle, not fixture guard)
+      beginEsignSend(store, planToken, payload, { allowFixturePdf: true });
 
       // Simulate successful gateway send — folder is now SHARED
       fixtures.set(`GET:/esign/api/v1/folders/myfolder?folderId=${folderId}`, {

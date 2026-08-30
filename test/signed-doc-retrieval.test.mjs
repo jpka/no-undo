@@ -119,7 +119,8 @@ describe("signed-doc retrieval — EXECUTED vs SHARED semantics", () => {
       const payload = { folderName: "reconcile-exec", recipients: [{ firstName: "A", lastName: "B", email: "a@b.com" }] };
       const { planToken } = await createEsignFolder(store1, payload);
       store1.approve(planToken);
-      beginEsignSend(store1, planToken, payload);
+      // allowFixturePdf: true (testing reconcile, not fixture guard)
+      beginEsignSend(store1, planToken, payload, { allowFixturePdf: true });
       // Now simulate restart: loadEsignStore should reconcile EXECUTED as done
       // For this we need to change the stub before load
       stubFetch({
@@ -152,7 +153,8 @@ describe("signed-doc retrieval — EXECUTED vs SHARED semantics", () => {
       store.approve(planToken);
       // Simulate that plan is executing
       const { beginEsignSend } = await importAdapter();
-      beginEsignSend(store, planToken, payload);
+      // allowFixturePdf: true (testing confirmFailed refusal, not fixture guard)
+      beginEsignSend(store, planToken, payload, { allowFixturePdf: true });
       const r = await confirmEsignFailed(store, planToken);
       assert.equal(r.ok, false);
       assert.match(r.error, /EXECUTED|SHARED/);
