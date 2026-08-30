@@ -342,11 +342,11 @@ export async function downloadSignedDocument(folderId, options = {}) {
         return { ok: false, status: res.status, transportError: false, text: j?.error_description ?? j?.errorDescription ?? j?.errorCode ?? text };
       }
       // Not an error JSON but unexpected text response — treat as failure
-      // rather than returning text bytes as a PDF.
+      // rather than returning text bytes as a PDF (would save HTML as a fake PDF).
       if (text.trim().startsWith("{")) {
         return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
       }
-      return { ok: true, status: res.status, bytes: new TextEncoder().encode(text), transportError: false };
+      return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
     }
     const buf = await res.arrayBuffer();
     // Peek: if the bytes decode as a small JSON error object, treat as failure.
