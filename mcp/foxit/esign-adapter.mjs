@@ -553,6 +553,21 @@ export function createEsignStore(journalPath, options = {}) {
   });
 }
 
+const _reconcileReports = new WeakMap();
+
+/**
+ * Retrieve the reconcile report attached to a store by loadEsignStore.
+ * Falls back to the WeakMap when the store was sealed.
+ * @param {import("safe-write-mcp-core").PlanStore<any>} store
+ * @returns {Array<{planToken: string, folderId: string|null, folderStatus: string|null, outcome: string, decision: string}>}
+ */
+export function getReconcileReport(store) {
+  if (!store) return [];
+  if (Array.isArray(store.reconcileReport)) return store.reconcileReport;
+  if (Array.isArray(store._reconcileReport)) return store._reconcileReport;
+  return _reconcileReports.get(store) ?? [];
+}
+
 /**
  * Load a PlanStore from a journal file for restart recovery. Replays the
  * journal, hydrates durable tokenToFolder and processedEvents stores, and
@@ -569,19 +584,55 @@ export async function loadEsignStore(journalPath, options = {}) {
     "esign",
     "auditPath" in options ? options.auditPath : process.env.NO_UNDO_ESIGN_AUDIT_PATH,
   );
+  /** @type {Array<{planToken: string, folderId: string|null, folderStatus: string|null, outcome: string, decision: string}>} */
+  const reconcileReport = [];
+  const userReconcile = options.reconcile;
   const store = await PlanStore.fromJournal(journalPath, {
     ...options,
     journalPath,
     audit: makeEsignAuditSink(auditPath),
     reconcile: async (planToken) => {
+      // If caller supplied a custom reconcile, delegate to it first so tests
+      // that inject a custom hook still control the outcome.
+      if (userReconcile) {
+        const customOutcome = await userReconcile(planToken);
+        // Record what we can infer — folderStatus not known for custom hooks
+        const folderId = tokenToFolder?.get(planToken) ?? null;
+        let decision;
+        if (customOutcome === "done") decision = "confirmed executed";
+        else if (customOutcome === "not-done") decision = "confirmed not executed → released for retry";
+        else decision = "outcome unknown — retained executing";
+        reconcileReport.push({ planToken, folderId, folderStatus: null, outcome: customOutcome ?? "unknown", decision });
+        return customOutcome;
+      }
       const folderId = tokenToFolder?.get(planToken);
-      if (!folderId) return "unknown";
+      if (!folderId) {
+        reconcileReport.push({ planToken, folderId: null, folderStatus: null, outcome: "unknown", decision: "outcome unknown — retained executing (no folderId mapping)" });
+        return "unknown";
+      }
       const status = await checkFolderStatus(folderId);
-      if (isSentStatus(status)) return "done";
-      if (status === "DRAFT") return "not-done";
-      return "unknown";
+      let outcome;
+      if (isSentStatus(status)) outcome = "done";
+      else if (status === "DRAFT") outcome = "not-done";
+      else outcome = "unknown";
+      let decision;
+      if (outcome === "done") decision = "confirmed executed";
+      else if (outcome === "not-done") decision = "confirmed not executed → released for retry";
+      else decision = "outcome unknown — retained executing";
+      reconcileReport.push({ planToken, folderId, folderStatus: status, outcome, decision });
+      return outcome;
     },
   });
+  // Expose the report on the store for the agent loop's recovery narration.
+  // The PlanStore instance is sealed by the core, but we can attach a property
+  // defensively (or via a WeakMap fallback if sealed).
+  try {
+    store.reconcileReport = reconcileReport;
+    store._reconcileReport = reconcileReport;
+  } catch {
+    // store is frozen/sealed — keep in module-level WeakMap as fallback
+    _reconcileReports.set(store, reconcileReport);
+  }
   if (tokenToFolder) {
     for (const plan of store.listExecuting()) {
       const folderId = plan.extra?.folderId;
@@ -825,6 +876,38 @@ export function maybeCrashAfterFsync(planToken) {
   process.stderr.write(
     `[crash-injection] NO_UNDO_CRASH_AFTER_FSYNC set — SIGKILL after beginExecute fsync ` +
       `(token=${planToken.slice(0, 8)}...) before the gateway send\n`,
+  );
+  process.kill(process.pid, "SIGKILL");
+  return true;
+}
+
+/**
+ * Second crash injection — the dangerous window.
+ *
+ * Fires AFTER the gateway sendDraftFolder call succeeds and BEFORE
+ * confirmEsignExecuted / verification. The folder is already SHARED on the
+ * gateway, so recovery must reconcile SHARED → done (exactly-once). The safe
+ * window (maybeCrashAfterFsync) would have left the folder DRAFT → not-done.
+ *
+ * Guarded by NO_UNDO_CRASH_AFTER_SEND, same matching rule as
+ * NO_UNDO_CRASH_AFTER_FSYNC: "1" for any token, or an exact planToken.
+ * Refused when NODE_ENV=production.
+ * @param {string} planToken
+ * @returns {boolean}
+ */
+export function maybeCrashAfterSend(planToken) {
+  if (process.env.NODE_ENV === "production") {
+    process.stderr.write(
+      "[crash-injection] ignored: NODE_ENV=production refuses crash injection\n",
+    );
+    return false;
+  }
+  const flag = process.env.NO_UNDO_CRASH_AFTER_SEND;
+  if (!flag) return false;
+  if (flag !== "1" && flag !== planToken) return false;
+  process.stderr.write(
+    `[crash-injection] NO_UNDO_CRASH_AFTER_SEND set — SIGKILL after gateway send ` +
+      `(token=${planToken.slice(0, 8)}...) before confirmEsignExecuted\n`,
   );
   process.kill(process.pid, "SIGKILL");
   return true;
