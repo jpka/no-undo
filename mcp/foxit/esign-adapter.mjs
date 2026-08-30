@@ -24,7 +24,7 @@
  */
 
 import { PlanStore } from "safe-write-mcp-core";
-import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, writeSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   compositeSink,
@@ -51,11 +51,11 @@ for (const [name, url] of [
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "https:") {
-      console.error(`[esign-adapter] ${name} must use HTTPS, got: ${url}`);
+      writeSync(2, `[esign-adapter] ${name} must use HTTPS, got: ${url}\n`);
       process.exit(1);
     }
   } catch {
-    console.error(`[esign-adapter] ${name} is not a valid URL: ${url}`);
+    writeSync(2, `[esign-adapter] ${name} is not a valid URL: ${url}\n`);
     process.exit(1);
   }
 }

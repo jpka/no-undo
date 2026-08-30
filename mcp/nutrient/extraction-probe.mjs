@@ -36,7 +36,7 @@
  * Never sends anything irreversible: extraction is read-only.
  */
 
-import { writeFileSync, mkdirSync, readFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
+import { writeFileSync, writeSync, mkdirSync, readFileSync, mkdtempSync, unlinkSync, rmdirSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,7 +52,7 @@ const keySource = process.env.NUTRIENT_DWS_EXTRACTION_API_KEY
   : "NUTRIENT_API_KEY";
 
 if (!apiKey) {
-  console.error("missing key: set NUTRIENT_API_KEY (or NUTRIENT_DWS_EXTRACTION_API_KEY) in .env");
+  writeSync(2, "missing key: set NUTRIENT_API_KEY (or NUTRIENT_DWS_EXTRACTION_API_KEY) in .env\n");
   process.exit(1);
 }
 // Logs the env var the key came from and its length. Never any of the key's
@@ -160,7 +160,7 @@ try {
     redirect: "error", // never replay the credentialed PDF upload onto a redirect target
   });
 } catch (err) {
-  console.error(`[FAIL] network: ${String(err)} cause=${JSON.stringify(err.cause)}`);
+  writeSync(2, `[FAIL] network: ${String(err)} cause=${JSON.stringify(err.cause)}\n`);
   process.exit(1);
 }
 const ms = Date.now() - started;
@@ -184,7 +184,7 @@ try {
   writeFileSync(outPath, raw, { flag: "wx", mode: 0o600 });
   wrote = true;
 } catch (err) {
-  console.error(`[FAIL] could not write response: ${String(err)}`);
+  writeSync(2, `[FAIL] could not write response: ${String(err)}\n`);
   process.exit(1);
 }
 process.on("exit", () => {
@@ -207,7 +207,7 @@ if (res.status === 200) {
   try {
     data = JSON.parse(raw);
   } catch {
-    console.error("[FAIL] non-JSON 200 body; inspect fixture");
+    writeSync(2, "[FAIL] non-JSON 200 body; inspect fixture\n");
     process.exit(1);
   }
   const elements = data.output?.elements ?? [];
@@ -243,9 +243,9 @@ if (res.status === 403) {
   console.error("  No-auth on the same route -> 401 (route exists); nonsense path -> 404.");
   console.error("  UNBLOCK: add a Data Extraction API key from dashboard.nutrient.io to .env");
   console.error("  as NUTRIENT_DWS_EXTRACTION_API_KEY, then re-run this probe.");
-  console.error(`  body: ${raw.slice(0, 240)}`);
+  writeSync(2, `  body: ${raw.slice(0, 240)}\n`);
   process.exit(1);
 }
-
-console.error(`[FAIL] HTTP ${res.status} (see fixture): ${raw.slice(0, 400)}`);
-process.exit(1);
+if (res.status !== 200) {
+  writeSync(2, `[FAIL] HTTP ${res.status} (see fixture): ${raw.slice(0, 400)}\n`);
+  process.exit(1);

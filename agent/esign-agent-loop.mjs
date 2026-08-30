@@ -40,7 +40,7 @@ import {
   isSentStatus,
 } from "../mcp/foxit/esign-adapter.mjs";
 import { parsePrompt, parseRecipientFlag, mergeRecipients, RecipientSchema } from "../mcp/foxit/prompt-parser.mjs";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, writeSync, readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -720,7 +720,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    console.error("[agent] Fatal:", err);
+    writeSync(2, `[agent] Fatal: ${String(err)}\n`);
     process.exit(1);
   });
 }

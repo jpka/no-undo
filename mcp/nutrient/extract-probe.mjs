@@ -48,7 +48,7 @@
  * Never sends anything irreversible: extraction is read-only.
  */
 
-import { writeFileSync, mkdirSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, writeSync, mkdirSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,7 +86,7 @@ const wantCalibrate = argv.includes("--calibrate");
 const singleMode = flagValue("--mode") ?? "understand";
 
 if (!wantCalibrate && !MODES.includes(singleMode)) {
-  console.error(`--mode must be one of ${MODES.join(", ")} (extract rejects "text")`);
+  writeSync(2, `--mode must be one of ${MODES.join(", ")} (extract rejects "text")\n`);
   process.exit(1);
 }
 
@@ -318,7 +318,7 @@ if (wantCalibrate && good.length) {
 }
 
 if (!good.length) {
-  console.error("\nVERDICT: no mode returned 200 — see the diagnostics above.");
+  writeSync(2, "\nVERDICT: no mode returned 200 — see the diagnostics above.\n");
   process.exit(1);
 }
 
