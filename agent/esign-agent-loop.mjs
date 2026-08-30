@@ -32,6 +32,8 @@ import {
   confirmEsignExecuted,
   confirmEsignFailed,
   listExecutingPlans,
+  getReconcileReport,
+  maybeCrashAfterSend,
   pollUntilSigned,
   downloadSignedDocument,
   checkFolderStatus,
@@ -303,16 +305,26 @@ export async function runAgentLoop({
   // folderStatus hook.
   const store = await loadEsignStore(resolvedJournal);
 
-  // loadEsignStore already replayed the journal and reconciled each
-  // executing token via the adapter's folderStatus hook (DRAFT→not-done,
-  // SHARED→done, unknown→stays executing). Leftover entries are unknowns
-  // that need human inspection — do not re-reconcile them here.
+  // Narrate what the store resolved during replay — the demo beat.
+  // loadEsignStore captures each reconciled token's observed folderStatus and
+  // decision (done→confirmed executed, not-done→released, unknown→retained).
+  // Previously we only printed when something remained stuck, so the successful
+  // path (SHARED → confirmed executed) was silent — the crash demo's whole
+  // point produced one word of output. Now we report regardless.
+  const reconcileReport = getReconcileReport(store);
+  if (reconcileReport.length > 0) {
+    console.error(`[agent] Recovered ${reconcileReport.length} stuck-executing plan(s) (reconciled on load):`);
+    for (const r of reconcileReport) {
+      const short = r.planToken.slice(0, 8);
+      const statusStr = r.folderStatus ?? "unknown";
+      console.error(`  - planToken=${short}... folderId=${r.folderId ?? "?"} → folderStatus=${statusStr} → ${r.decision}`);
+    }
+  }
+
+  // Leftover entries are unknowns that need human inspection — do not
+  // re-reconcile them here.
   const stuck = listExecutingPlans(store);
   if (stuck.length > 0) {
-    console.error(`[agent] Recovered ${stuck.length} stuck-executing plan(s) (outcome unknown, reconciled on load):`);
-    for (const p of stuck) {
-      console.error(`  - ${p.planToken.slice(0, 8)}... folderId=${p.extra?.folderId ?? "?"}`);
-    }
     console.error(
       `[agent] ${stuck.length} plan(s) remain executing (outcome unknown) — human must resolve`,
     );
@@ -404,6 +416,12 @@ export async function runAgentLoop({
     // Step 3: Irreversible gateway call.
     const send = await sendDraftFolder(folderId);
     if (send.ok) {
+      // Dangerous-window crash injection: after the gateway send, before any
+      // verification/confirmation. The folder is already SHARED, so recovery
+      // will reconcile SHARED → confirmed executed (exactly-once — the demo's
+      // money shot). Keep distinct from NO_UNDO_CRASH_AFTER_FSYNC which fires
+      // before the send (DRAFT → not-done, the safe window).
+      maybeCrashAfterSend(planToken);
       // Do not claim an irreversible side effect on the strength of the
       // caller's own 200 — verify against the system of record.
       // Re-read folderStatus; only SHARED/EXECUTED prove the send happened.
