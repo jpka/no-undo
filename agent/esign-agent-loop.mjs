@@ -416,12 +416,6 @@ export async function runAgentLoop({
     // Step 3: Irreversible gateway call.
     const send = await sendDraftFolder(folderId);
     if (send.ok) {
-      // Dangerous-window crash injection: after the gateway send, before any
-      // verification/confirmation. The folder is already SHARED, so recovery
-      // will reconcile SHARED → confirmed executed (exactly-once — the demo's
-      // money shot). Keep distinct from NO_UNDO_CRASH_AFTER_FSYNC which fires
-      // before the send (DRAFT → not-done, the safe window).
-      maybeCrashAfterSend(planToken);
       // Do not claim an irreversible side effect on the strength of the
       // caller's own 200 — verify against the system of record.
       // Re-read folderStatus; only SHARED/EXECUTED prove the send happened.
@@ -432,6 +426,15 @@ export async function runAgentLoop({
         verifiedStatus = null;
       }
       if (isSentStatus(verifiedStatus)) {
+        // Dangerous-window crash injection: after the gateway send AND after
+        // verification confirms the folder is SHARED, before confirm. If we
+        // crashed before verification and the folder stayed DRAFT (gh #43),
+        // recovery would reconcile DRAFT → not-done → release for retry,
+        // exercising the safe window instead. Only crash now — the true
+        // dangerous window where the folder is already SHARED and recovery
+        // must reconcile SHARED → confirmed executed (exactly-once). Keep
+        // distinct from NO_UNDO_CRASH_AFTER_FSYNC which fires before the send.
+        maybeCrashAfterSend(planToken);
         const c = await confirmEsignExecuted(store, planToken);
         if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
         console.error(`[agent] Send succeeded — plan executed (verified ${verifiedStatus})`);

@@ -275,4 +275,101 @@ describe("gh #43: HTTP 200 + error body must not be treated as success", () => {
       j.cleanup();
     }
   });
+
+  test("crash injection skipped when folder stays DRAFT (gh #43 — dangerous window only fires after SHARED verification)", async () => {
+    // Regression: maybeCrashAfterSend must NOT fire before verification.
+    // If it did, a 200-ok-that-didn't-send (folder stays DRAFT) would crash
+    // the process and recovery would reconcile DRAFT → not-done → release,
+    // exercising the safe window instead of the intended dangerous window.
+    const j = tmpJournal();
+    try {
+      // Send claims success but folder stays DRAFT (the real gh #43 quirk).
+      fixtures.set("POST:/esign/api/v1/folders/sendDraftFolder", {
+        ok: true,
+        status: 200,
+        json: { result: "success" },
+      });
+      fixtures.set("GET:/esign/api/v1/folders/myfolder?folderId=35426627", {
+        ok: true,
+        status: 200,
+        json: { result: "success", folder: { folderId: 35426627, folderName: "test", folderStatus: "DRAFT" } },
+      });
+
+      // Spy on process.kill to detect whether crash injection fired.
+      let killCalled = false;
+      const origKill = process.kill;
+      process.kill = () => {
+        killCalled = true;
+        // Do NOT actually kill the test process — just record the call.
+      };
+      const origEnv = process.env.NO_UNDO_CRASH_AFTER_SEND;
+      process.env.NO_UNDO_CRASH_AFTER_SEND = "1";
+
+      try {
+        const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+        await runAgentLoop({
+          folderName: "crash-guard-test",
+          recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true }],
+          journalPath: j.path,
+          autoApprove: true,
+          allowFixturePdf: true,
+        });
+      } finally {
+        process.kill = origKill;
+        if (origEnv === undefined) delete process.env.NO_UNDO_CRASH_AFTER_SEND;
+        else process.env.NO_UNDO_CRASH_AFTER_SEND = origEnv;
+      }
+
+      // Must NOT have called kill — the crash injection must not have fired
+      // because verification saw DRAFT, not SHARED.
+      assert.equal(killCalled, false, "crash injection must not fire when folder stays DRAFT");
+    } finally {
+      j.cleanup();
+    }
+  });
+
+  test("crash injection DOES fire when folder is SHARED (dangerous window confirmed)", async () => {
+    // Complement: when verification confirms SHARED, the crash injection
+    // must fire (the dangerous window — the demo's money shot).
+    const j = tmpJournal();
+    try {
+      fixtures.set("POST:/esign/api/v1/folders/sendDraftFolder", {
+        ok: true,
+        status: 200,
+        json: { result: "success" },
+      });
+      fixtures.set("GET:/esign/api/v1/folders/myfolder?folderId=35426627", {
+        ok: true,
+        status: 200,
+        json: { result: "success", folder: { folderId: 35426627, folderName: "test", folderStatus: "SHARED" } },
+      });
+
+      let killCalled = false;
+      const origKill = process.kill;
+      process.kill = () => {
+        killCalled = true;
+      };
+      const origEnv = process.env.NO_UNDO_CRASH_AFTER_SEND;
+      process.env.NO_UNDO_CRASH_AFTER_SEND = "1";
+
+      try {
+        const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+        await runAgentLoop({
+          folderName: "crash-guard-shared",
+          recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true }],
+          journalPath: j.path,
+          autoApprove: true,
+          allowFixturePdf: true,
+        });
+      } finally {
+        process.kill = origKill;
+        if (origEnv === undefined) delete process.env.NO_UNDO_CRASH_AFTER_SEND;
+        else process.env.NO_UNDO_CRASH_AFTER_SEND = origEnv;
+      }
+
+      assert.equal(killCalled, true, "crash injection must fire when folder is SHARED (dangerous window)");
+    } finally {
+      j.cleanup();
+    }
+  });
 });
