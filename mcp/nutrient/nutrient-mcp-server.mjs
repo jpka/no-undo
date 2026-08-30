@@ -23,7 +23,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, writeSync, realpathSync } from "node:fs";
 import { join, dirname, basename, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
@@ -928,7 +928,7 @@ async function main() {
 // must not open a stdio transport or bind the approval port.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    console.error("[nutrient-mcp-server] fatal:", err);
+    writeSync(2, `[nutrient-mcp-server] fatal: ${err instanceof Error && err.stack ? err.stack : err}\n`);
     process.exit(1);
   });
 }

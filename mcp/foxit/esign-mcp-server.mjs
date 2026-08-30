@@ -18,6 +18,7 @@
  * Connects over stdio transport + localhost HTTP approval UI.
  */
 
+import { writeSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -421,6 +422,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("[esign-mcp-server] fatal:", err);
+  writeSync(2, `[esign-mcp-server] fatal: ${err instanceof Error && err.stack ? err.stack : err}\n`);
   process.exit(1);
 });
