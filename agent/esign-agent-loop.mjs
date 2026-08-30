@@ -116,14 +116,17 @@ const API_VERSION = "2026-05-25";
 
 /**
  * Whether Nutrient enrichment should be attempted for this run.
- * Both keys must be present — DWS Processor and Data Extraction are separately
- * provisioned (Gate 0, docs/gate0-aug18.md). No key → Foxit-only path, no error.
- * `NO_NUTRIENT=1` forces Foxit-only even when keys are present (CI, single-cred repro).
+ * The extraction path authenticates exclusively with the configured extraction
+ * key (`NUTRIENT_DWS_EXTRACTION_API_KEY`) — the processor key is not used by
+ * this path, so requiring it would silently skip extraction for anyone who
+ * provisioned only the extraction service (gh #53 review).
+ * `NO_NUTRIENT=1` forces Foxit-only even when the key is present (CI,
+ * single-cred repro).
  * @returns {boolean}
  */
 export function shouldEnrichWithNutrient() {
   if (process.env.NO_NUTRIENT === "1") return false;
-  return Boolean(process.env.NUTRIENT_API_KEY && process.env.NUTRIENT_DWS_EXTRACTION_API_KEY);
+  return Boolean(process.env.NUTRIENT_DWS_EXTRACTION_API_KEY);
 }
 
 /**

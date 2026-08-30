@@ -92,6 +92,13 @@ describe("single-pipeline (P6)", () => {
     assert.equal(shouldEnrichWithNutrient(), true);
   });
 
+  test("shouldEnrichWithNutrient: true with extraction key only (no processor key)", async () => {
+    delete process.env.NUTRIENT_API_KEY;
+    process.env.NUTRIENT_DWS_EXTRACTION_API_KEY = "k2";
+    const { shouldEnrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
+    assert.equal(shouldEnrichWithNutrient(), true);
+  });
+
   test("enrichWithNutrient returns null without keys (no throw)", async () => {
     const { enrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
     const r = await enrichWithNutrient({ folderName: "Test", docSource: null, promptExcerpt: "hi" });
