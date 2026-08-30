@@ -25,7 +25,7 @@ function defaultFixtures() {
     ok: true, status: 200, json: { result: "success" },
   });
   fixtures.set("GET:/esign/api/v1/folders/myfolder?folderId=35999999", {
-    ok: true, status: 200, json: { folder: { folderId: 35999999, folderStatus: "DRAFT" } },
+    ok: true, status: 200, json: { folder: { folderId: 35999999, folderStatus: "SHARED" } },
   });
 }
 

@@ -271,6 +271,9 @@ export async function checkFolderStatus(folderId, opts = {}) {
     timeoutMs,
   );
   if (!r.ok) return null;
+  // Gateway returns HTTP 200 with {result:"error"} on failure — treat as
+  // unknown so callers do not mistake a missing folderStatus for DRAFT.
+  if (r.json?.result === "error") return null;
   const j = r.json;
   const folder = j?.folder;
   const status = folder?.folderStatus;
@@ -328,7 +331,43 @@ export async function downloadSignedDocument(folderId, options = {}) {
       const text = await res.text().catch(() => "");
       return { ok: false, status: res.status, transportError: false, text };
     }
+    // Guard against HTTP 200 with error JSON (same gateway quirk as sendDraftFolder).
+    // PDF bytes are binary; an error body is JSON with {result:"error"}.
+    const contentType = res.headers?.get?.("content-type") ?? "";
+    if (contentType.includes("json") || contentType.includes("text")) {
+      const text = await res.text().catch(() => "");
+      let j;
+      try { j = JSON.parse(text); } catch {}
+      if (j?.result === "error") {
+        return { ok: false, status: res.status, transportError: false, text: j?.error_description ?? j?.errorDescription ?? j?.errorCode ?? text };
+      }
+      // Not an error JSON but unexpected text response — treat as failure
+      // rather than returning text bytes as a PDF (would save HTML as a fake PDF).
+      if (text.trim().startsWith("{")) {
+        return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
+      }
+      return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
+    }
     const buf = await res.arrayBuffer();
+    // A real PDF starts with the magic bytes %PDF (0x25 0x50 0x44 0x46).
+    // Anything else is an error response (HTML, plain text, JSON) regardless
+    // of content-type — treat as failure and surface the error body.
+    const magic = new Uint8Array(buf.slice(0, 4));
+    const isPdf = magic[0] === 0x25 && magic[1] === 0x50 && magic[2] === 0x44 && magic[3] === 0x46;
+    if (!isPdf) {
+      const text = new TextDecoder().decode(buf);
+      let j;
+      try { j = JSON.parse(text); } catch {}
+      if (j?.result === "error") {
+        return {
+          ok: false,
+          status: res.status,
+          transportError: false,
+          text: j?.error_description ?? j?.errorDescription ?? j?.errorCode ?? text.slice(0, 500),
+        };
+      }
+      return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
+    }
     return { ok: true, status: res.status, bytes: new Uint8Array(buf), transportError: false };
   } catch (err) {
     return { ok: false, status: 0, transportError: true, text: String(err) };
@@ -420,8 +459,13 @@ export function getPollState(folderId) {
  * Call the gateway send-draft endpoint. This is the irreversible action —
  * once it succeeds, the folder status flips from DRAFT to SHARED and the
  * signers receive their emails.
+ *
+ * The gateway returns HTTP 200 with an error body on failure, e.g.
+ * `{result:"error", error_description:"folderId parameter must be required."}`
+ * — so we MUST inspect the JSON body, not just the HTTP status. Likewise for
+ * any future vendor signalling (`errorCode`, `error_description`).
  * @param {string} folderId
- * @returns {Promise<{ok: boolean, status: number, transportError: boolean}>}
+ * @returns {Promise<{ok: boolean, status: number, transportError: boolean, json?: any, text?: string, gatewayError?: boolean, errorDescription?: string|null}>}
  */
 export async function sendDraftFolder(folderId) {
   const r = await req(`${GATEWAY}/esign/api/v1/folders/sendDraftFolder`, {
@@ -429,7 +473,19 @@ export async function sendDraftFolder(folderId) {
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: JSON.stringify({ folderId }),
   });
-  return { ok: r.ok && r.status === 200, status: r.status, transportError: r.transportError };
+  const gatewayError = r.json?.result === "error";
+  const errorDescription =
+    r.json?.error_description ?? r.json?.errorDescription ?? r.json?.errorCode ?? null;
+  const ok = r.ok && r.status === 200 && !gatewayError;
+  return {
+    ok,
+    status: r.status,
+    transportError: r.transportError,
+    json: r.json,
+    text: r.text,
+    gatewayError,
+    errorDescription,
+  };
 }
 
 // --- Plan store with reconcile ----------------------------------------------
@@ -670,8 +726,9 @@ export async function createEsignFolder(store, payload, options = {}) {
   const folder = j?.folder;
   const folderId = folder?.folderId;
 
-  if (!folderId || !createResult.ok) {
-    return { error: "createfolder failed", status: createResult.status };
+  if (j?.result === "error" || !folderId || !createResult.ok) {
+    const detail = j?.error_description ?? j?.errorDescription ?? j?.errorCode ?? j?.result ?? createResult.text?.slice(0, 200);
+    return { error: `createfolder failed${detail ? `: ${detail}` : ""}`, status: createResult.status, detail };
   }
 
   // Build plan create options — extra carries the Foxit-assembled document's

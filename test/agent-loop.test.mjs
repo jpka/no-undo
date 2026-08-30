@@ -25,7 +25,7 @@ function defaultFixtures() {
   fixtures.set("GET:/esign/api/v1/folders/myfolder?folderId=35426627", {
     ok: true,
     status: 200,
-    json: { result: "success", folder: { folderId: 35426627, folderName: "test", folderStatus: "DRAFT" } },
+    json: { result: "success", folder: { folderId: 35426627, folderName: "test", folderStatus: "SHARED" } },
   });
   fixtures.set("POST:/esign/api/v1/folders/createfolder", {
     ok: true,
