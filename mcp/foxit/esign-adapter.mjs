@@ -709,7 +709,7 @@ export async function createEsignFolder(store, payload, options = {}) {
       inputType: "base64",
       base64FileString: [pdfBase64],
       fileNames: [`${payload.folderName}.pdf`],
-      processTextTags: false,
+      processTextTags: true,
       processAcroFields: false,
       sendNow: false,
       parties: payload.recipients.map((r, i) => ({
