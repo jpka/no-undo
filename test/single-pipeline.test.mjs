@@ -206,13 +206,10 @@ describe("single-pipeline (P6)", () => {
     const { renderEsignPlan } = await import("../agent/esign-agent-loop.mjs");
     const { loadEsignStore } = await import("../mcp/foxit/esign-adapter.mjs");
     const j = tmpJournal();
-    // Use a tiny valid PDF as the "enriched source bytes"
-    const tinyPdfBase64 =
-      "JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAw" +
-      "IG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8" +
-      "PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXT4+CmVuZG9iagp0" +
-      "cmFpbGVyCjw8L1Jvb3QgMSAwIFI+Pg==";
-    const pdfBytes = Buffer.from(tinyPdfBase64, "base64");
+    // Use a tiny valid PDF containing a Foxit Text Tag so FILL_FIELDS_AND_SIGN
+    // has a field — tagless enriched PDFs are now rejected (gh #45 Greptile P1).
+    const taggedPdf = "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >> endobj\n4 0 obj << /Length 44 >> stream\nBT /F1 12 Tf 50 700 Td (${signfield:1:y:____}) Tj ET\nendstream endobj\ntrailer << /Root 1 0 R >>";
+    const pdfBytes = Buffer.from(taggedPdf, "latin1");
     try {
       const store = await loadEsignStore(j.path);
       const result = await createEsignFolder(

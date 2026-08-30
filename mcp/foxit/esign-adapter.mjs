@@ -652,6 +652,11 @@ export async function createEsignFolder(store, payload, options = {}) {
   // P6 single-pipeline: if the caller (agent loop's Nutrient enrichment)
   // already resolved source bytes, thread them straight through — the
   // approval card describes exactly what Foxit sends, no discarded bytes.
+  // Guard: with FILL_FIELDS_AND_SIGN + processTextTags:true, the PDF must
+  // contain at least one Foxit Text Tag (e.g. ${signfield:1:y:____}).
+  // A tagless enriched PDF would create a draft that the gateway refuses
+  // ("Please assign a signature field") — fail fast with a clear error
+  // instead of producing a doomed draft.
   if (options.pdfBytes) {
     try {
       const buf = Buffer.isBuffer(options.pdfBytes)
@@ -660,11 +665,28 @@ export async function createEsignFolder(store, payload, options = {}) {
           ? Buffer.from(options.pdfBytes)
           : null;
       if (buf && buf.length > 0) {
+        const raw = buf.toString("latin1");
+        const hasTag = raw.includes("signfield") || raw.includes("${s:");
+        if (!hasTag && !options.allowUntaggedEnrichedPdf) {
+          return {
+            error:
+              "enriched PDF lacks required Foxit Text Tags (${signfield:seq:y:____}) — " +
+              "with FILL_FIELDS_AND_SIGN + processTextTags:true the gateway will refuse the send " +
+              '("Please assign a signature field"). Supply a tagged PDF or omit pdfBytes to use ' +
+              "the assembled invoice with signature blocks.",
+            status: 0,
+          };
+        }
+        if (!hasTag) {
+          console.error("[esign-adapter] WARN: enriched PDF has no Foxit Text Tags — send will be refused (allowed via allowUntaggedEnrichedPdf)");
+        }
         pdfBase64 = buf.toString("base64");
         pdfSha256 = sha256Base64(pdfBase64);
         pdfVia = "enriched-source";
       }
-    } catch { /* fall through to assembly */ }
+    } catch {
+      /* fall through to assembly for unexpected decode errors */
+    }
   }
 
   if (pdfVia !== "enriched-source") {
