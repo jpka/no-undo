@@ -715,7 +715,8 @@ export async function createEsignFolder(store, payload, options = {}) {
   // contain at least one Foxit Text Tag (e.g. ${signfield:1:y:____}).
   // A tagless enriched PDF would create a draft that the gateway refuses
   // ("Please assign a signature field") — fail fast with a clear error
-  // instead of producing a doomed draft.
+  // instead of producing a doomed draft, and never silently replace the
+  // user's document with a generated fixture (gh #53 review).
   if (options.pdfBytes) {
     try {
       const buf = Buffer.isBuffer(options.pdfBytes)

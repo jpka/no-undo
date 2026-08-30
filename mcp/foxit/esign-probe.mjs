@@ -50,9 +50,9 @@ const folderIdArg = (() => {
 let probeCreatedFolderId = null;
 const results = [];
 
-/** Records a test result with its name, verdict (ok/fail/skip), and optional detail message. */
-function record(name, verdict, detail) {
-  results.push({ name, verdict, detail });
+/** Records a test result with its name, verdict (ok/fail/skip), optional detail, and what this check confirms. */
+function record(name, verdict, detail, confirms) {
+  results.push({ name, verdict, detail, confirms });
   const mark = verdict === "ok" ? "PASS" : verdict === "skip" ? "SKIP" : "FAIL";
   console.log(`[${mark}] ${name}`);
   if (detail) console.log(`       ${detail}`);
@@ -106,7 +106,7 @@ function redactJson(node) {
 function redactString(text) {
   return text
     .replace(/("folderAuthorId"|"folderCompanyId")\s*:\s*\d+/g, '$1:0')
-    .replace(/(("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*")(\\.|[^"\\])*(")/g, '$1[redacted]$4')
+    .replace(/(("folderAuthorEmail"|"folderAuthorFirstName"|"folderAuthorLastName")\s*:\s*")(\\.|[^\\"])*(")/g, '$1[redacted]$4')
     .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, "[email redacted]");
 }
 
@@ -129,6 +129,7 @@ record(
   "1. eSign entitlement (GET getAllFolderIdsByStatus)",
   entitlement.ok ? "ok" : "fail",
   summarize(entitlement),
+  entitlement.ok ? "account can reach /esign/api/v1" : "account cannot reach eSign",
 );
 
 if (!entitlement.ok && entitlement.status !== 0) {
@@ -141,7 +142,9 @@ if (!entitlement.ok && entitlement.status !== 0) {
 // --- 4. Send-draft endpoint reachability ---------------------------------
 // Probed with no body: we only want to distinguish "route does not exist" (404)
 // from "route exists, your request was malformed" (400/405/415/422). Either of
-// the latter means the endpoint is there.
+// the latter means the endpoint is there. This is reachability only — we do
+// NOT call sendDraftFolder with a real folderId, so this does NOT confirm the
+// send path end to end.
 
 for (const [label, url] of [
   ["gateway", `${GATEWAY}/esign/api/v1/folders/sendDraftFolder`],
@@ -152,11 +155,12 @@ for (const [label, url] of [
     headers: gatewayHeaders({ "content-type": "application/json" }),
     body: "{}",
   });
-  const exists = r.status !== 0 && r.status !== 404;
+  const reachable = r.status !== 0 && r.status !== 404;
   record(
-    `4. send-draft route on ${label} host`,
-    exists ? "ok" : "fail",
-    `${summarize(r, 240)}${exists ? "  (non-404 => route exists)" : "  (404/unreachable => no such route)"}`,
+    `4. send-draft route reachable on ${label} host (not exercised)`,
+    reachable ? "ok" : "fail",
+    `${summarize(r, 240)}${reachable ? "  (non-404 => route reachable)" : "  (404/unreachable => no such route)"}`,
+    reachable ? "endpoint is reachable; send NOT exercised (empty body, no folderId)" : "endpoint not found",
   );
 }
 
@@ -215,6 +219,7 @@ if (!createDraft) {
     "2. createfolder(sendNow:false) returns folderId",
     folderId ? "ok" : "fail",
     `${summarize(create)}${folderId ? `\n       folderId=${folderId}` : "\n       no folderId found in response — inspect the body above and adjust the field path"}`,
+    folderId ? "createfolder accepts sendNow:false and returns a folderId" : "createfolder did not return a folderId",
   );
 
   if (folderId) {
@@ -232,6 +237,7 @@ if (!createDraft) {
       "3. folderStatus === DRAFT",
       folderStatus === "DRAFT" ? "ok" : "fail",
       `${summarize(status, 300)}\n       folderStatus=${folderStatus ?? "(not found)"}`,
+      folderStatus === "DRAFT" ? "GET myfolder reports folderStatus === DRAFT" : "folderStatus is not DRAFT",
     );
     console.log(
       `\n  >> Draft folder ${folderId} left in place, unsent. Delete it from the eSign UI when done.\n`,
@@ -298,7 +304,7 @@ if (probeDownload) {
         }
       }
       if (!beforePoll.ok) pollVerdict = "fail";
-      record("5. pollUntilSigned / EXECUTED terminal state", pollVerdict, pollDetail);
+      record("5. pollUntilSigned / EXECUTED terminal state", pollVerdict, pollDetail, isExecuted ? "folder reached EXECUTED (signed, terminal)" : "polling path works; folder not yet EXECUTED (informational)");
 
       // Test download routes — both must be non-404 to confirm vendor-named routes exist
       // Single-document and envelope routes are binary PDF endpoints; a 4xx here (e.g. 403/400)
@@ -315,6 +321,7 @@ if (probeDownload) {
           `6. download route (${label})`,
           exists ? "ok" : "fail",
           `${summarize(r, 260)}${exists ? "  (non-404 => route exists)" : "  (404 => route not found — check docs/foxit-contact-aug27.md §2/§4a)"} — body: ${bodyPreview}`,
+          exists ? "download route is reachable (bytes not asserted)" : "download route not found",
         );
       }
     }
@@ -326,25 +333,35 @@ console.log("\n================ VERDICT ================");
 for (const r of results) console.log(`${r.verdict.toUpperCase().padEnd(4)}  ${r.name}`);
 
 const entitled = results[0].verdict === "ok";
-const twoStep = results.find((r) => r.name.startsWith("3."))?.verdict === "ok";
-const anySendRoute = results.filter((r) => r.name.startsWith("4.")).some((r) => r.verdict === "ok");
+const draftCreated = results.find((r) => r.name.startsWith("2."))?.verdict === "ok";
+const draftConfirmed = results.find((r) => r.name.startsWith("3."))?.verdict === "ok";
+const sendRouteReachable = results.filter((r) => r.name.startsWith("4.")).some((r) => r.verdict === "ok");
 
 console.log("\nWhat this means for the build plan:");
 if (!entitled) {
   console.log("  eSign is NOT reachable with these credentials.");
   console.log("  -> Contingency required. docs/review-aug18.md section 5.");
-} else if (twoStep && anySendRoute) {
-  console.log("  Two-step create-draft-then-send is CONFIRMED end to end.");
-  console.log("  -> Aug 20-22 core work proceeds as planned. Lock the send host now.");
-} else if (entitled && !twoStep) {
+} else if (draftCreated && draftConfirmed && sendRouteReachable) {
+  console.log("  Draft creation + read-back is CONFIRMED.");
+  console.log("  Send-draft route is reachable (not exercised).");
+  console.log("  -> Two-step send is reachable end to end, but the send itself");
+  console.log("     has NOT been exercised. A real sendDraftFolder call with a");
+  console.log("     folderId + folderStatus SHARED read-back is required to");
+  console.log("     confirm the send path. Do not claim 'confirmed end to end'");
+  console.log("     until that send + read-back has succeeded.");
+} else if (draftCreated && draftConfirmed) {
+  console.log("  Draft creation + read-back is CONFIRMED.");
+  console.log("  No send-draft route was reachable.");
+  console.log("  -> Send step goes on the legacy host, or via createfolder(sendNow:true)");
+  console.log("     against the already-drafted content. Decide before writing the adapter.");
+} else if (entitled && !draftConfirmed) {
   console.log("  eSign reachable but the draft step is unconfirmed.");
   console.log("  -> Re-run with --create-draft, or the send must be modelled as a");
   console.log("     single irreversible createfolder(sendNow:true) call, which makes");
   console.log("     the pre-send ledger write the ONLY protection. Note it in the plan.");
 } else {
-  console.log("  Draft creation works but no send-draft route was reachable.");
-  console.log("  -> Send step goes on the legacy host, or via createfolder(sendNow:true)");
-  console.log("     against the already-drafted content. Decide before writing the adapter.");
+  console.log("  eSign reachable but draft creation and/or send route not confirmed.");
+  console.log("  -> See individual check results above.");
 }
 
 process.exitCode = entitled ? 0 : 1;
