@@ -193,7 +193,7 @@ export async function enrichWithNutrient(parsed, options = {}) {
  * parsed fields are echoed back in the approval card for human correction
  * before any irreversible step.
  * @param {string} prompt
- * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number, recipients?: Array<{firstName: string, lastName: string, email: string, resolved?: boolean}>}} [options]
+ * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number, allowUntaggedEnrichedPdf?: boolean, recipients?: Array<{firstName: string, lastName: string, email: string, resolved?: boolean}>}} [options]
  * @returns {Promise<object>}
  */
 export async function runFromPrompt(prompt, options = {}) {
@@ -555,6 +555,7 @@ async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
   const allowFixturePdf = args.includes("--allow-fixture-pdf");
+  const allowUntaggedEnrichedPdf = args.includes("--allow-untagged-enriched-pdf");
   const pollForSigned = args.includes("--poll-signed");
   const downloadSigned = args.includes("--download-signed") || pollForSigned;
   const pollTimeoutIdx = args.indexOf("--poll-timeout");
@@ -575,7 +576,7 @@ async function main() {
 
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
+    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, allowUntaggedEnrichedPdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
   } else {
     // Skip flag values when looking for the folder name (e.g. --recipient
     // "Name <addr>" should not be treated as the folder name).
