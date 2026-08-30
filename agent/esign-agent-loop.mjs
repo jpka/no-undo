@@ -34,6 +34,8 @@ import {
   listExecutingPlans,
   pollUntilSigned,
   downloadSignedDocument,
+  checkFolderStatus,
+  isSentStatus,
 } from "../mcp/foxit/esign-adapter.mjs";
 import { parsePrompt, parseRecipientFlag, mergeRecipients, RecipientSchema } from "../mcp/foxit/prompt-parser.mjs";
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
@@ -402,47 +404,89 @@ export async function runAgentLoop({
     // Step 3: Irreversible gateway call.
     const send = await sendDraftFolder(folderId);
     if (send.ok) {
-      const c = await confirmEsignExecuted(store, planToken);
-      if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
-      console.error("[agent] Send succeeded — plan executed");
-      result = { planToken, folderId, status: "executed" };
-      // Optional post-send polling for the signed document (EXECUTED + download).
-      // Off by default so existing tests/CI remain fast; enabled with
-      // pollForSigned or downloadSigned. The send is already idempotent and
-      // audit-logged — polling never re-sends, only waits for the signers to
-      // finish and then fetches the signed PDF. Persist folderId+status so a
-      // restart can resume polling without re-sending (see pollUntilSigned).
-      if (pollForSigned || downloadSigned) {
-        console.error(`[agent] Polling for signed state (EXECUTED) — timeout ${pollTimeoutMs}ms ...`);
-        const polled = await pollUntilSigned(folderId, { timeoutMs: pollTimeoutMs, intervalMs: 2000 });
-        result.poll = { status: polled.status, executed: polled.executed, attempts: polled.attempts, elapsedMs: polled.elapsedMs };
-        if (polled.executed) {
-          console.error(`[agent] Folder reached EXECUTED after ${polled.attempts} poll(s)`);
-          if (downloadSigned) {
-            const dl = await downloadSignedDocument(folderId, { docNumber: 0 });
-            if (dl.ok && dl.bytes) {
-              const outPath = signedOutputPath ?? resolve(dirname(resolvedJournal), `signed-${folderId}.pdf`);
-              try {
-                writeFileSync(outPath, dl.bytes);
-                console.error(`[agent] Signed PDF written: ${outPath} (${dl.bytes.length} bytes)`);
-                result.signedPdfPath = outPath;
-                result.signedBytesLen = dl.bytes.length;
-              } catch (e) {
-                console.error(`[agent] Failed to write signed PDF: ${e}`);
-                result.downloadError = String(e);
+      // Do not claim an irreversible side effect on the strength of the
+      // caller's own 200 — verify against the system of record.
+      // Re-read folderStatus; only SHARED/EXECUTED prove the send happened.
+      let verifiedStatus;
+      try {
+        verifiedStatus = await checkFolderStatus(folderId);
+      } catch {
+        verifiedStatus = null;
+      }
+      if (isSentStatus(verifiedStatus)) {
+        const c = await confirmEsignExecuted(store, planToken);
+        if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
+        console.error(`[agent] Send succeeded — plan executed (verified ${verifiedStatus})`);
+        result = { planToken, folderId, status: "executed", verifiedStatus };
+        // Optional post-send polling for the signed document (EXECUTED + download).
+        // Off by default so existing tests/CI remain fast; enabled with
+        // pollForSigned or downloadSigned. The send is already idempotent and
+        // audit-logged — polling never re-sends, only waits for the signers to
+        // finish and then fetches the signed PDF. Persist folderId+status so a
+        // restart can resume polling without re-sending (see pollUntilSigned).
+        if (pollForSigned || downloadSigned) {
+          console.error(`[agent] Polling for signed state (EXECUTED) — timeout ${pollTimeoutMs}ms ...`);
+          const polled = await pollUntilSigned(folderId, { timeoutMs: pollTimeoutMs, intervalMs: 2000 });
+          result.poll = { status: polled.status, executed: polled.executed, attempts: polled.attempts, elapsedMs: polled.elapsedMs };
+          if (polled.executed) {
+            console.error(`[agent] Folder reached EXECUTED after ${polled.attempts} poll(s)`);
+            if (downloadSigned) {
+              const dl = await downloadSignedDocument(folderId, { docNumber: 0 });
+              if (dl.ok && dl.bytes) {
+                const outPath = signedOutputPath ?? resolve(dirname(resolvedJournal), `signed-${folderId}.pdf`);
+                try {
+                  writeFileSync(outPath, dl.bytes);
+                  console.error(`[agent] Signed PDF written: ${outPath} (${dl.bytes.length} bytes)`);
+                  result.signedPdfPath = outPath;
+                  result.signedBytesLen = dl.bytes.length;
+                } catch (e) {
+                  console.error(`[agent] Failed to write signed PDF: ${e}`);
+                  result.downloadError = String(e);
+                }
+              } else {
+                const msg = dl.transportError ? `transport error: ${dl.text}` : `download failed HTTP ${dl.status}: ${dl.text?.slice(0,120)}`;
+                console.error(`[agent] Signed PDF download failed: ${msg}`);
+                result.downloadError = msg;
               }
-            } else {
-              const msg = dl.transportError ? `transport error: ${dl.text}` : `download failed HTTP ${dl.status}: ${dl.text?.slice(0,120)}`;
-              console.error(`[agent] Signed PDF download failed: ${msg}`);
-              result.downloadError = msg;
             }
+          } else {
+            console.error(`[agent] Poll timed out after ${polled.attempts} attempt(s), last status=${polled.status ?? "null"} — not yet EXECUTED`);
+            // Do not treat as execution failure: the send succeeded (SHARED), the document is merely not yet signed.
+            // The folderId is persisted, so a later run can resume polling via pollUntilSigned or the --probe-download path.
+            result.note = `sent for signature (status ${polled.status ?? "unknown"}), not yet EXECUTED`;
           }
-        } else {
-          console.error(`[agent] Poll timed out after ${polled.attempts} attempt(s), last status=${polled.status ?? "null"} — not yet EXECUTED`);
-          // Do not treat as execution failure: the send succeeded (SHARED), the document is merely not yet signed.
-          // The folderId is persisted, so a later run can resume polling via pollUntilSigned or the --probe-download path.
-          result.note = `sent for signature (status ${polled.status ?? "unknown"}), not yet EXECUTED`;
         }
+      } else if (verifiedStatus === "DRAFT") {
+        console.error(`[agent] Send reported success but folderStatus=${verifiedStatus} — send did NOT happen`);
+        const reason =
+          send.errorDescription ??
+          send.json?.error_description ??
+          `folderStatus ${verifiedStatus} after send ok`;
+        const c = await confirmEsignFailed(store, planToken, reason);
+        if (!c.ok) {
+          console.error(`[agent] confirmFailed refused: ${c.error} — retained executing`);
+          result = { planToken, folderId, status: "executing", note: c.error, verifiedStatus };
+        } else {
+          console.error("[agent] Send not verified — plan released for retry");
+          result = {
+            planToken,
+            folderId,
+            status: "failed",
+            gatewayStatus: send.status,
+            verifiedStatus,
+            error: reason,
+          };
+        }
+      } else {
+        // verifiedStatus === null / unknown — ambiguous, do NOT claim executed
+        console.error(`[agent] Send ok but folderStatus unknown (${String(verifiedStatus)}) — leaving executing for reconcile`);
+        result = {
+          planToken,
+          folderId,
+          status: "executing",
+          note: "folderStatus unknown after send — reconcile required",
+          verifiedStatus,
+        };
       }
     } else if (send.transportError) {
       // Ambiguous — may have been applied before the connection broke.
@@ -455,16 +499,18 @@ export async function runAgentLoop({
         note: "transport error, reconcile required",
       };
     } else {
-      // Definite rejection (4xx/5xx) — but still verify folderStatus before
-      // releasing, via confirmEsignFailed's DRAFT/SHARED guard.
-      const c = await confirmEsignFailed(store, planToken, `gateway ${send.status}`);
+      // Definite rejection (4xx/5xx or 200+error body) — but still verify
+      // folderStatus before releasing, via confirmEsignFailed's DRAFT/SHARED guard.
+      const detail = send.errorDescription ? `gateway ${send.status}: ${send.errorDescription}` : `gateway ${send.status}`;
+      console.error(`[agent] Send failed — ${detail}`);
+      const c = await confirmEsignFailed(store, planToken, detail);
       if (!c.ok) {
         // SHARED or unknown — retained executing for reconcile, not released
         console.error(`[agent] confirmFailed refused: ${c.error} — retained executing`);
-        result = { planToken, folderId, status: "executing", note: c.error };
+        result = { planToken, folderId, status: "executing", note: c.error, error: detail };
       } else {
         console.error("[agent] Send failed — plan released for retry");
-        result = { planToken, folderId, status: "failed", gatewayStatus: send.status };
+        result = { planToken, folderId, status: "failed", gatewayStatus: send.status, error: detail, gatewayError: send.gatewayError };
       }
     }
   } finally {
