@@ -237,12 +237,12 @@ if (res.status === 200) {
 }
 
 if (res.status === 403) {
-  console.error("\n[FAIL] HTTP 403 Forbidden on /extraction/parse.");
-  console.error("  This is the Gate 0 entitlement finding (Aug 18): the key in use is not");
-  console.error("  a Data Extraction key. Data Extraction is a separately provisioned product/tenant.");
-  console.error("  No-auth on the same route -> 401 (route exists); nonsense path -> 404.");
-  console.error("  UNBLOCK: add a Data Extraction API key from dashboard.nutrient.io to .env");
-  console.error("  as NUTRIENT_DWS_EXTRACTION_API_KEY, then re-run this probe.");
+  writeSync(2, "\n[FAIL] HTTP 403 Forbidden on /extraction/parse.\n");
+  writeSync(2, "  This is the Gate 0 entitlement finding (Aug 18): the key in use is not\n");
+  writeSync(2, "  a Data Extraction key. Data Extraction is a separately provisioned product/tenant.\n");
+  writeSync(2, "  No-auth on the same route -> 401 (route exists); nonsense path -> 404.\n");
+  writeSync(2, "  UNBLOCK: add a Data Extraction API key from dashboard.nutrient.io to .env\n");
+  writeSync(2, "  as NUTRIENT_DWS_EXTRACTION_API_KEY, then re-run this probe.\n");
   writeSync(2, `  body: ${raw.slice(0, 240)}\n`);
   process.exit(1);
 }

@@ -422,6 +422,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  writeSync(2, `[esign-mcp-server] fatal: ${String(err)}\n`);
+  writeSync(2, `[esign-mcp-server] fatal: ${err instanceof Error && err.stack ? err.stack : err}\n`);
   process.exit(1);
 });

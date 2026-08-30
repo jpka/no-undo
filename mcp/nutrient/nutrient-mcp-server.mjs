@@ -928,7 +928,7 @@ async function main() {
 // must not open a stdio transport or bind the approval port.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    writeSync(2, `[nutrient-mcp-server] fatal: ${String(err)}\n`);
+    writeSync(2, `[nutrient-mcp-server] fatal: ${err instanceof Error && err.stack ? err.stack : err}\n`);
     process.exit(1);
   });
 }

@@ -720,7 +720,7 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
-    writeSync(2, `[agent] Fatal: ${String(err)}\n`);
+    writeSync(2, `[agent] Fatal: ${err instanceof Error && err.stack ? err.stack : err}\n`);
     process.exit(1);
   });
 }
