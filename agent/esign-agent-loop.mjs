@@ -22,7 +22,7 @@
  */
 
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
 import {
   loadEsignStore,
@@ -543,7 +543,7 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error("[agent] Fatal:", err);
     process.exit(1);
