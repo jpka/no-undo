@@ -28,8 +28,11 @@ const baseEnv = {
   NO_FOXIT_MCP: "1",
 };
 
-// Collect stdout/stderr and exit code from a spawned CLI run.
-function spawnCli(args, { cwd, env } = {}) {
+// Spawn the CLI and resolve once it reaches the approval server (logged to
+// stderr). We kill it there — the point is to prove main() ran, not to wait
+// for the production Foxit gateway round-trip (which is what makes the test
+// non-hermetic and network-dependent).
+function spawnUntilApproval(args, { cwd, env } = {}) {
   return new Promise((res) => {
     const child = spawn(process.execPath, [agentPath, ...args], {
       cwd,
@@ -38,8 +41,16 @@ function spawnCli(args, { cwd, env } = {}) {
     });
     let stdout = "";
     let stderr = "";
+    const onData = (d) => {
+      stderr += d;
+      // "Approval server:" is logged after the approval server binds,
+      // BEFORE any gateway call. Reaching this line proves main() ran.
+      if (/Approval server:/.test(stderr)) {
+        child.kill();
+      }
+    };
     child.stdout.on("data", (d) => { stdout += d; });
-    child.stderr.on("data", (d) => { stderr += d; });
+    child.stderr.on("data", onData);
     child.on("close", (code) => res({ code, stdout, stderr }));
   });
 }
@@ -57,24 +68,35 @@ describe("CLI entry point (issue #40)", () => {
     );
     let stdout = "";
     let stderr = "";
+    const onData = (d) => {
+      stderr += d;
+      if (/Approval server:/.test(stderr)) child.kill();
+    };
     child.stdout.on("data", (d) => { stdout += d; });
-    child.stderr.on("data", (d) => { stderr += d; });
+    child.stderr.on("data", onData);
     const code = await new Promise((r) => child.on("close", r));
 
     const out = stdout + stderr;
     // main() ran: it logs with [agent] prefix. The broken guard exits 0
-    // silently; any of success(0)/fatal(1)/failed(2) with output is meaningful.
+    // silently; reaching the approval server (and getting killed, code=null)
+    // proves main() ran and reached the gate before any gateway call.
     assert.match(out, /\[agent\]/, "expected agent log output (main() never ran before fix)");
-    assert.ok(code === 0 || code === 1 || code === 2, `expected meaningful exit code, got ${code}`);
+    assert.match(out, /Approval server:/, "main() did not reach approval server");
+    // code is null when killed by SIGTERM (expected); 0/1/2 are also fine
+    // if the process exits before the kill races.
+    assert.ok(code === null || code === 0 || code === 1 || code === 2,
+      `expected meaningful exit code, got ${code}`);
   });
 
   test("absolute invocation reaches approval server", async () => {
-    const { code, stdout, stderr } = await spawnCli(
+    const { code, stdout, stderr } = await spawnUntilApproval(
       ["--prompt", "Send contract to Alice and Bob", "--auto-approve", "--allow-fixture-pdf"],
     );
     const out = stdout + stderr;
     assert.match(out, /\[agent\]/);
-    assert.ok(code === 0 || code === 1 || code === 2, `expected meaningful exit code, got ${code}`);
+    assert.match(out, /Approval server:/);
+    assert.ok(code === null || code === 0 || code === 1 || code === 2,
+      `expected meaningful exit code, got ${code}`);
   });
 
   test("guard idiom matches pathToFileURL (no raw template literal)", async () => {
