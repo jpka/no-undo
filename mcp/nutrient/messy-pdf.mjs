@@ -6,9 +6,13 @@
  * imperfect, varied confidence — exactly the low-confidence, weakly-grounded
  * fields the human gate exists for.
  *
- * Extracted from extraction-probe.mjs (Gate 0) when extract-probe.mjs needed
+ * Extracted from extraction-probe.mjs (Gate 0) when extraction-probe.mjs needed
  * the same document: the calibration comparison is only meaningful if both
  * endpoints see byte-identical input.
+ *
+ * Sources every figure from the shared invoice fixture
+ * (mcp/fixtures/invoice-data.mjs) so the Nutrient extraction and the Foxit
+ * assembly render the same document — one coherent demo story.
  *
  * Deliberate properties, and what each one is for:
  *   - "cr8te a p9ckng sl1p" — OCR-hostile glyphs, drives low recognitionScore.
@@ -19,6 +23,8 @@
  *   - Handwritten red annotations — printed-style handwriting, the case the
  *     Nutrient docs say separates `understand` from `agentic`.
  */
+
+import { INVOICE, usd } from "../fixtures/invoice-data.mjs";
 
 /**
  * Generate a deterministic single-page PDF with skewed lines, stains, and a
@@ -54,20 +60,22 @@ export function messyPdf() {
   }
 
   // Title.
-  push("BT /F1 22 Tf 0 0 0 rg 40 700 Td (ACME Freight Services - Invoice #INV-2026-0418) Tj ET\n");
+  push(`BT /F1 22 Tf 0 0 0 rg 40 700 Td (${INVOICE.title} - Invoice #${INVOICE.invoiceNumber}) Tj ET\n`);
   // A "date stamped" line with OCR-hostile glyph substitutions.
-  push("BT /F1 12 Tf 0 0 0 rg 1 0 0 1 40 670 Tm (Received  Aug 18 2026   cr8te a p9ckng sl1p) Tj ET\n");
+  push(`BT /F1 12 Tf 0 0 0 rg 1 0 0 1 40 670 Tm (Received  ${INVOICE.receivedDate}   cr8te a p9ckng sl1p) Tj ET\n`);
+
   // Body lines, each with a small rotation to simulate scan skew.
+  // Built from the shared fixture so the Nutrient extraction and Foxit
+  // assembly describe the same document.
+  const items = INVOICE.lineItems;
   const lines = [
-    "Payer:     Kaniefsky Transport LLC, 4th Ave, Brooklyn NY",
-    "Vendor:    ACME Freight Services - terminal 3, Bayonne NJ",
+    `Payer:     ${INVOICE.payer.name}, ${INVOICE.payer.location}`,
+    `Vendor:    ${INVOICE.vendor.name} - ${INVOICE.vendor.location}`,
     "Item       Qty   Unit price      Total",
-    "Parcel 1   2      $14.50          $29.00",
-    "Parcel 2   1      $39.99          $39.99",
-    "Handling   3      $4.00           $12.00",
-    "Subtotal                     $80.99",
-    "Tax (7.25%)                    $5.87",
-    "Total due                     $86.86",
+    ...items.map((it) => `${it.description}   ${it.quantity}      ${usd(it.unitPrice)}          ${usd(it.total)}`),
+    `Subtotal                     ${usd(INVOICE.subtotal)}`,
+    `Tax (${INVOICE.taxRate}%)                    ${usd(INVOICE.taxAmount)}`,
+    `Total due                     ${usd(INVOICE.totalDue)}`,
   ];
   let ty = 620;
   for (const [i, ln] of lines.entries()) {
