@@ -198,34 +198,37 @@ describe("single-pipeline (P6)", () => {
     assert.ok(rendered.details.some((d) => d.label === "Document SHA-256"));
   });
 
-  test("createEsignFolder threads pdfBytes through (no discarded staged bytes)", async () => {
-    // P6 Greptile P1 follow-up: when enrichment resolves source bytes, they must
-    // be threaded into Foxit assembly so the approval card describes exactly what
-    // Foxit sends — not a freshly assembled invoice.
-    const { createEsignFolder } = await import("../mcp/foxit/esign-adapter.mjs");
+  test("runAgentLoop threads enriched pdfBytes through createEsignFolder (gh #33)", async () => {
+    // gh #33: the CLI path (runAgentLoop → createEsignFolder) must forward enriched
+    // bytes so the digest matches the bytes actually sent. The old test called
+    // createEsignFolder directly with bytes identical to the fixture — the digest
+    // didn't change, so it passed without proving a different document was hashed.
+    // Here we drive the real CLI path with genuinely different bytes and assert
+    // the digest changes from the fixture's.
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const { TINY_PDF_BASE64, TINY_PDF_SHA256, sha256Base64 } = await import("../mcp/foxit/pdf-assembly.mjs");
     const { renderEsignPlan } = await import("../agent/esign-agent-loop.mjs");
-    const { loadEsignStore } = await import("../mcp/foxit/esign-adapter.mjs");
     const j = tmpJournal();
-    // Use a tiny valid PDF containing a Foxit Text Tag so FILL_FIELDS_AND_SIGN
-    // has a field — tagless enriched PDFs are now rejected (gh #45 Greptile P1).
-    const taggedPdf = "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >> endobj\n4 0 obj << /Length 44 >> stream\nBT /F1 12 Tf 50 700 Td (${signfield:1:y:____}) Tj ET\nendstream endobj\ntrailer << /Root 1 0 R >>";
-    const pdfBytes = Buffer.from(taggedPdf, "latin1");
+    // A tagged PDF that genuinely differs from TINY_PDF_BASE64 — the digest must
+    // change, proving createEsignFolder hashed the enriched bytes, not the fixture.
+    const taggedPdf = "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >>\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >>\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\n4 0 obj << /Length 50 >>\nstream\nBT /F1 12 Tf 50 700 Td (${signfield:1:y:____}) Tj ET\nendstream\nendobj\ntrailer << /Root 1 0 R >>";
+    const enrichedBytes = Buffer.from(taggedPdf, "latin1");
+    const enrichedDigest = sha256Base64(enrichedBytes.toString("base64"));
+    assert.notEqual(enrichedDigest, TINY_PDF_SHA256, "enriched bytes must differ from fixture");
     try {
-      const store = await loadEsignStore(j.path);
-      const result = await createEsignFolder(
-        store,
-        { folderName: "Enriched Doc", recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }] },
-        { pdfBytes, extra: { nutrientSummary: "Nutrient enrichment wired — 4 bytes" } },
-      );
-      assert.ok(result.planToken, "planToken present");
-      // Verify the plan's extra shows enriched-source via (the bytes were threaded, not discarded)
-      const pending = store.listPending();
-      assert.equal(pending.length, 1);
-      const rendered = renderEsignPlan(pending[0]);
-      assert.ok(rendered.details.some((d) => d.label === "Nutrient enrichment"));
-      const viaDetail = rendered.details.find((d) => d.label === "Document SHA-256");
-      assert.ok(viaDetail, "Document SHA-256 detail present");
-      assert.match(viaDetail.value, /enriched-source/, "documentVia should be enriched-source when pdfBytes threaded");
+      const result = await runAgentLoop({
+        folderName: "Enriched CLI Test",
+        recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }],
+        journalPath: j.path,
+        autoApprove: true,
+        allowFixturePdf: true,
+        pdfBytes: enrichedBytes,
+      });
+      assert.equal(result.status, "executed", "send should succeed through the real CLI path");
+      // The approval card must show the enriched document's digest, not the fixture's.
+      assert.notEqual(result.documentSha256, TINY_PDF_SHA256, "documentSha256 must reflect enriched bytes, not fixture");
+      assert.equal(result.documentSha256, enrichedDigest, "digest must match hash of enriched bytes sent to gateway");
+      assert.equal(result.documentVia, "enriched-source", "documentVia must indicate enriched-source when pdfBytes threaded");
     } finally {
       j.cleanup();
     }

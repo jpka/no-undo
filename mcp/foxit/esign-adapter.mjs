@@ -850,7 +850,7 @@ export async function createEsignFolder(store, payload, options = {}) {
   // Persist token → folderId in durable store (CodeRabbit finding #2)
   tokenToFolder?.set(created.planToken, folderId);
 
-  return { planToken: created.planToken, folderId, documentVia: pdfVia };
+  return { planToken: created.planToken, folderId, documentVia: pdfVia, documentSha256: pdfSha256 };
 }
 
 /**
