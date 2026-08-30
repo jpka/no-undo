@@ -349,21 +349,24 @@ export async function downloadSignedDocument(folderId, options = {}) {
       return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
     }
     const buf = await res.arrayBuffer();
-    // Peek: if the bytes decode as a small JSON error object, treat as failure.
-    // A real PDF starts with %PDF, never with {"result":"error"}.
-    if (buf.byteLength < 2048) {
-      try {
-        const maybeText = new TextDecoder().decode(buf);
-        const maybeJson = JSON.parse(maybeText);
-        if (maybeJson?.result === "error") {
-          return {
-            ok: false,
-            status: res.status,
-            transportError: false,
-            text: maybeJson?.error_description ?? maybeJson?.errorDescription ?? maybeJson?.errorCode ?? maybeText,
-          };
-        }
-      } catch {}
+    // A real PDF starts with the magic bytes %PDF (0x25 0x50 0x44 0x46).
+    // Anything else is an error response (HTML, plain text, JSON) regardless
+    // of content-type — treat as failure and surface the error body.
+    const magic = new Uint8Array(buf.slice(0, 4));
+    const isPdf = magic[0] === 0x25 && magic[1] === 0x50 && magic[2] === 0x44 && magic[3] === 0x46;
+    if (!isPdf) {
+      const text = new TextDecoder().decode(buf);
+      let j;
+      try { j = JSON.parse(text); } catch {}
+      if (j?.result === "error") {
+        return {
+          ok: false,
+          status: res.status,
+          transportError: false,
+          text: j?.error_description ?? j?.errorDescription ?? j?.errorCode ?? text.slice(0, 500),
+        };
+      }
+      return { ok: false, status: res.status, transportError: false, text: text.slice(0, 500) };
     }
     return { ok: true, status: res.status, bytes: new Uint8Array(buf), transportError: false };
   } catch (err) {
