@@ -700,6 +700,14 @@ export async function createEsignFolder(store, payload, options = {}) {
   let pdfSha256 = fallbackPdfSha256;
   let pdfVia = "fixture";
 
+  // Thread instructions and docSource from the parsed prompt into the
+  // payload that reaches assemble() → buildInvoiceHtml, so the rendered
+  // invoice shows the human's actual instructions and source reference
+  // instead of the generic fallback (gh #38).
+  const assemblePayload = { ...payload };
+  if (options.instructions) assemblePayload.instructions = options.instructions;
+  if (options.docSource) assemblePayload.docSource = options.docSource;
+
   // P6 single-pipeline: if the caller (agent loop's Nutrient enrichment)
   // already resolved source bytes, thread them straight through — the
   // approval card describes exactly what Foxit sends, no discarded bytes.
@@ -750,7 +758,7 @@ export async function createEsignFolder(store, payload, options = {}) {
 
   if (pdfVia !== "enriched-source") {
     try {
-      const assembled = await assemble(payload, {
+      const assembled = await assemble(assemblePayload, {
         html: options.pdfHtml ?? undefined,
         timeoutMs: options.pdfTimeoutMs ?? undefined,
       });

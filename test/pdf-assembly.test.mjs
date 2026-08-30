@@ -70,9 +70,10 @@ describe("pdf-assembly — buildInvoiceHtml", () => {
     assert.match(html, /O&#39;Neil/);
   });
 
-  test("fallback title for empty folderName", () => {
+  test("falls back to fixture title for empty folderName", () => {
     const html = buildInvoiceHtml({ folderName: "", recipients: [] });
-    assert.match(html, /Document/);
+    // Empty folderName falls back to the shared fixture's title (ACME Freight Services)
+    assert.match(html, /ACME Freight Services/);
   });
 
   test("renders docSource and default instructions when instructions null", () => {

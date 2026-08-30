@@ -354,6 +354,8 @@ export async function runAgentLoop({
     const payload = { folderName, recipients };
     const created = await createEsignFolder(store, payload, {
       extra: { promptExcerpt, promptInstructions, promptDocSource, nutrientSummary },
+      instructions: promptInstructions,
+      docSource: promptDocSource,
     });
     if (created.error) {
       throw new Error(`createfolder failed: ${created.error} (status ${created.status ?? "?"})`);
