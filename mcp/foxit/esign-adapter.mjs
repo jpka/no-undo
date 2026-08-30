@@ -666,7 +666,7 @@ export async function createEsignFolder(store, payload, options = {}) {
           : null;
       if (buf && buf.length > 0) {
         const raw = buf.toString("latin1");
-        const hasTag = raw.includes("signfield") || raw.includes("${s:");
+        const hasTag = /\$\{(?:signfield|s):\d+:/.test(raw);
         if (!hasTag && !options.allowUntaggedEnrichedPdf) {
           return {
             error:
