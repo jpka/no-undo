@@ -667,7 +667,7 @@ export async function createEsignFolder(store, payload, options = {}) {
       if (buf && buf.length > 0) {
         const raw = buf.toString("latin1");
         const tagSeqs = new Set();
-        for (const m of raw.matchAll(/\$\{(?:signfield|s):(\d+):/g)) tagSeqs.add(Number(m[1]));
+        for (const m of raw.matchAll(/\$\{(?:signfield|s):(\d+):y(?::[^}]*)?\}/g)) tagSeqs.add(Number(m[1]));
         const needed = (payload.recipients || []).length;
         const missing = [];
         for (let i = 1; i <= needed; i++) if (!tagSeqs.has(i)) missing.push(i);
