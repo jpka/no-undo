@@ -207,6 +207,30 @@ describe("single-pipeline (P6)", () => {
     assert.equal(r.bytes.length, 4);
   });
 
+  test("enrichWithNutrient degrades to Foxit-only when res.text() rejects (gh #34)", async () => {
+    process.env.NUTRIENT_API_KEY = "k1";
+    process.env.NUTRIENT_DWS_EXTRACTION_API_KEY = "k2";
+    const { enrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("api.nutrient.io/extraction/extract")) {
+        return { ok: true, status: 200, text: async () => { throw new Error("stream aborted"); } };
+      }
+      return origFetch(url);
+    };
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const r = await enrichWithNutrient({ folderName: "Test", docSource: null, promptExcerpt: "hi" }, { docBytes: bytes });
+    globalThis.fetch = origFetch;
+
+    // Degrades gracefully — res.text() rejection is caught, Foxit continues.
+    assert.ok(r);
+    assert.match(r.summary, /extraction response error/);
+    assert.match(r.summary, /Foxit-only path continues/);
+    assert.equal(r.bytes.length, 4);
+  });
+
   test("renderEsignPlan surfaces nutrientSummary", async () => {
     const { renderEsignPlan } = await import("../agent/esign-agent-loop.mjs");
     const plan = {

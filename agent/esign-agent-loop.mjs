@@ -209,7 +209,18 @@ export async function enrichWithNutrient(parsed, options = {}) {
     };
   }
 
-  const raw = await res.text();
+  let raw;
+  try {
+    raw = await res.text();
+  } catch (e) {
+    console.error(
+      `[pipeline] Nutrient extraction response error (degraded to Foxit-only): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return {
+      summary: `Nutrient enrichment — document staged (${upload.length} bytes), extraction response error (Foxit-only path continues)`,
+      bytes: upload,
+    };
+  }
   if (!res.ok) {
     console.error(`[pipeline] Nutrient extraction HTTP ${res.status} (degraded to Foxit-only): ${raw.slice(0, 200)}`);
     return {
