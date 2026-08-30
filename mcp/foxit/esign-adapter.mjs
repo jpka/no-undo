@@ -714,9 +714,9 @@ export async function createEsignFolder(store, payload, options = {}) {
   // Guard: with FILL_FIELDS_AND_SIGN + processTextTags:true, the PDF must
   // contain at least one Foxit Text Tag (e.g. ${signfield:1:y:____}).
   // A tagless enriched PDF would create a draft that the gateway refuses
-  // ("Please assign a signature field"). Enrichment is optional and must
-  // never block the Foxit-only send (gh #53 review): when the enriched
-  // bytes are untagged, fall back to Foxit assembly instead of rejecting.
+  // ("Please assign a signature field") — fail fast with a clear error
+  // instead of producing a doomed draft, and never silently replace the
+  // user's document with a generated fixture (gh #53 review).
   if (options.pdfBytes) {
     try {
       const buf = Buffer.isBuffer(options.pdfBytes)
@@ -733,20 +733,24 @@ export async function createEsignFolder(store, payload, options = {}) {
         for (let i = 1; i <= needed; i++) if (!tagSeqs.has(i)) missing.push(i);
         const hasTag = needed > 0 ? missing.length === 0 : tagSeqs.size > 0;
         if (!hasTag && !options.allowUntaggedEnrichedPdf) {
-          // Enrichment returned untagged bytes — fall back to Foxit assembly
-          // so the send can proceed with a properly tagged document.
           const detail = missing.length
             ? `missing tags for party ${missing.join(", ")} (found ${[...tagSeqs].sort((a,b)=>a-b).join(", ") || "none"})`
             : "no Foxit Text Tags found";
-          console.error(
-            `[esign-adapter] enriched PDF lacks required Foxit Text Tags (${detail}) — ` +
-            "falling back to Foxit assembly (enrichment never blocks the send).",
-          );
-        } else {
-          pdfBase64 = buf.toString("base64");
-          pdfSha256 = sha256Base64(pdfBase64);
-          pdfVia = "enriched-source";
+          return {
+            error:
+              `enriched PDF lacks required Foxit Text Tags (${detail}) — ` +
+              "with FILL_FIELDS_AND_SIGN + processTextTags:true the gateway will refuse the send " +
+              '("Please assign a signature field"). Supply a tagged PDF with ${signfield:seq:y:____} per recipient or omit pdfBytes to use ' +
+              "the assembled invoice with signature blocks.",
+            status: 0,
+          };
         }
+        if (!hasTag) {
+          console.error(`[esign-adapter] WARN: enriched PDF missing tags for party ${missing.join(",")} — send will be refused (allowed via allowUntaggedEnrichedPdf)`);
+        }
+        pdfBase64 = buf.toString("base64");
+        pdfSha256 = sha256Base64(pdfBase64);
+        pdfVia = "enriched-source";
       }
     } catch {
       /* fall through to assembly for unexpected decode errors */
