@@ -9,3 +9,4 @@ dist/
 esign-journal.jsonl
 .token-map.json
 .webhook-dedup.json
+test-docs
