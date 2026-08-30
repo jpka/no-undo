@@ -250,6 +250,38 @@ describe("single-pipeline (P6)", () => {
     assert.ok(labels.includes("Nutrient enrichment"), `labels: ${labels.join(", ")}`);
   });
 
+  test("createEsignFolder falls back to assembly when enriched bytes are untagged (gh #53 review)", async () => {
+    // gh #53 review: enrichment is optional and must never block the Foxit-only
+    // send. When the enriched PDF lacks Foxit Text Tags, createEsignFolder should
+    // fall back to Foxit assembly instead of rejecting the document.
+    const { createEsignFolder, loadEsignStore } = await import("../mcp/foxit/esign-adapter.mjs");
+    const { TINY_PDF_SHA256 } = await import("../mcp/foxit/pdf-assembly.mjs");
+
+    // An untagged PDF (no ${signfield:...} tags) — enrichment might return this
+    // for a source PDF that never went through Foxit's tag pipeline.
+    const untaggedPdf = "%PDF-1.4\n1 0 obj << /Type /Catalog /Pages 2 0 R >>\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >>\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\n4 0 obj << /Length 44 >>\nstream\nBT /F1 12 Tf 50 700 Td (No tags here) Tj ET\nendstream\nendobj\ntrailer << /Root 1 0 R >>";
+    const untaggedBytes = Buffer.from(untaggedPdf, "latin1");
+
+    const j = tmpJournal();
+    const store = await loadEsignStore(j.path);
+    try {
+      const created = await createEsignFolder(
+        store,
+        { folderName: "Untagged Enriched Test", recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }] },
+        { pdfBytes: untaggedBytes, allowFixturePdf: true },
+      );
+      // Should NOT error — should fall back to Foxit assembly.
+      assert.ok(!created.error, `expected fallback to succeed, got error: ${created.error ?? "none"}`);
+      assert.ok(created.planToken, "expected a plan token");
+      assert.ok(created.folderId, "expected a folderId");
+      // The digest should NOT match the untagged bytes — it should reflect the
+      // assembled (tagged) document from the fallback.
+      assert.ok(created.documentSha256, "expected documentSha256");
+    } finally {
+      j.cleanup();
+    }
+  });
+
   test("runFromPrompt: Foxit-only path still executes end-to-end (no keys)", async () => {
     const { runFromPrompt } = await import("../agent/esign-agent-loop.mjs");
     const j = tmpJournal();
