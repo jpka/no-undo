@@ -193,7 +193,7 @@ export async function enrichWithNutrient(parsed, options = {}) {
  * parsed fields are echoed back in the approval card for human correction
  * before any irreversible step.
  * @param {string} prompt
- * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number, recipients?: Array<{firstName: string, lastName: string, email: string, resolved?: boolean}>}} [options]
+ * @param {{journalPath?: string, autoApprove?: boolean, approvalTimeoutMs?: number, allowUntaggedEnrichedPdf?: boolean, recipients?: Array<{firstName: string, lastName: string, email: string, resolved?: boolean}>}} [options]
  * @returns {Promise<object>}
  */
 export async function runFromPrompt(prompt, options = {}) {
@@ -225,6 +225,8 @@ export async function runFromPrompt(prompt, options = {}) {
     promptInstructions: parsed.instructions,
     promptDocSource: parsed.docSource,
     nutrientSummary,
+    pdfBytes: enrichment?.bytes ?? null,
+    allowUntaggedEnrichedPdf: options.allowUntaggedEnrichedPdf ?? false,
     pollForSigned: options.pollForSigned,
     pollTimeoutMs: options.pollTimeoutMs,
     downloadSigned: options.downloadSigned,
@@ -289,6 +291,8 @@ export async function runAgentLoop({
   promptInstructions = null,
   promptDocSource = null,
   nutrientSummary = null,
+  pdfBytes = null,
+  allowUntaggedEnrichedPdf = false,
   pollForSigned = false,
   pollTimeoutMs = 30_000,
   downloadSigned = false,
@@ -356,12 +360,14 @@ export async function runAgentLoop({
       extra: { promptExcerpt, promptInstructions, promptDocSource, nutrientSummary },
       instructions: promptInstructions,
       docSource: promptDocSource,
+      pdfBytes,
+      allowUntaggedEnrichedPdf,
     });
     if (created.error) {
       throw new Error(`createfolder failed: ${created.error} (status ${created.status ?? "?"})`);
     }
-    const { planToken, folderId, documentVia } = created;
-    console.error(`[agent] Draft: folderId=${folderId} planToken=${planToken.slice(0, 8)}… documentVia=${documentVia}`);
+    const { planToken, folderId, documentVia, documentSha256 } = created;
+    console.error(`[agent] Draft: folderId=${folderId} planToken=${planToken.slice(0, 8)}… documentVia=${documentVia} documentSha256=${documentSha256.slice(0, 16)}…`);
 
     if (autoApprove) {
       const a = store.approve(planToken);
@@ -440,7 +446,7 @@ export async function runAgentLoop({
         const c = await confirmEsignExecuted(store, planToken);
         if (!c.ok) throw new Error(`confirmExecuted failed: ${c.error}`);
         console.error(`[agent] Send succeeded — plan executed (verified ${verifiedStatus})`);
-        result = { planToken, folderId, status: "executed", verifiedStatus };
+        result = { planToken, folderId, status: "executed", verifiedStatus, documentSha256, documentVia };
         // Optional post-send polling for the signed document (EXECUTED + download).
         // Off by default so existing tests/CI remain fast; enabled with
         // pollForSigned or downloadSigned. The send is already idempotent and
@@ -549,6 +555,7 @@ async function main() {
   const args = process.argv.slice(2);
   const autoApprove = args.includes("--auto-approve");
   const allowFixturePdf = args.includes("--allow-fixture-pdf");
+  const allowUntaggedEnrichedPdf = args.includes("--allow-untagged-enriched-pdf");
   const pollForSigned = args.includes("--poll-signed");
   const downloadSigned = args.includes("--download-signed") || pollForSigned;
   const pollTimeoutIdx = args.indexOf("--poll-timeout");
@@ -569,7 +576,7 @@ async function main() {
 
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
+    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, allowUntaggedEnrichedPdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
   } else {
     // Skip flag values when looking for the folder name (e.g. --recipient
     // "Name <addr>" should not be treated as the folder name).
