@@ -666,19 +666,27 @@ export async function createEsignFolder(store, payload, options = {}) {
           : null;
       if (buf && buf.length > 0) {
         const raw = buf.toString("latin1");
-        const hasTag = /\$\{(?:signfield|s):\d+:/.test(raw);
+        const tagSeqs = new Set();
+        for (const m of raw.matchAll(/\$\{(?:signfield|s):(\d+):/g)) tagSeqs.add(Number(m[1]));
+        const needed = (payload.recipients || []).length;
+        const missing = [];
+        for (let i = 1; i <= needed; i++) if (!tagSeqs.has(i)) missing.push(i);
+        const hasTag = needed > 0 ? missing.length === 0 : tagSeqs.size > 0;
         if (!hasTag && !options.allowUntaggedEnrichedPdf) {
+          const detail = missing.length
+            ? `missing tags for party ${missing.join(", ")} (found ${[...tagSeqs].sort((a,b)=>a-b).join(", ") || "none"})`
+            : "no Foxit Text Tags found";
           return {
             error:
-              "enriched PDF lacks required Foxit Text Tags (${signfield:seq:y:____}) — " +
+              `enriched PDF lacks required Foxit Text Tags (${detail}) — ` +
               "with FILL_FIELDS_AND_SIGN + processTextTags:true the gateway will refuse the send " +
-              '("Please assign a signature field"). Supply a tagged PDF or omit pdfBytes to use ' +
+              '("Please assign a signature field"). Supply a tagged PDF with ${signfield:seq:y:____} per recipient or omit pdfBytes to use ' +
               "the assembled invoice with signature blocks.",
             status: 0,
           };
         }
         if (!hasTag) {
-          console.error("[esign-adapter] WARN: enriched PDF has no Foxit Text Tags — send will be refused (allowed via allowUntaggedEnrichedPdf)");
+          console.error(`[esign-adapter] WARN: enriched PDF missing tags for party ${missing.join(",")} — send will be refused (allowed via allowUntaggedEnrichedPdf)`);
         }
         pdfBase64 = buf.toString("base64");
         pdfSha256 = sha256Base64(pdfBase64);
