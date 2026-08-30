@@ -109,7 +109,10 @@ function renderEsignPlan(plan) {
   };
 }
 
-// --- Nutrient enrichment (P6: single-pipeline wiring) -----------------------
+// --- Nutrient enrichment (P6: real extraction + routing) --------------------
+
+const EXTRACT_URL = "https://api.nutrient.io/extraction/extract";
+const API_VERSION = "2026-05-25";
 
 /**
  * Whether Nutrient enrichment should be attempted for this run.
@@ -127,16 +130,16 @@ export function shouldEnrichWithNutrient() {
  * Best-effort Nutrient enrichment before the gate.
  *
  * Reversible, unattended steps that run BEFORE Foxit assembly / the approval gate:
- * if a document file is resolvable from the prompt's docSource, read its bytes
- * and return a summary for the approval card. Any failure is logged and
- * swallowed — enrichment never blocks the Foxit-only send, which is the
- * graded path for the Foxit track.
+ * if document bytes are available and both API keys are present, upload them to
+ * the real `/extraction/extract` endpoint, route each field through `routeFields`,
+ * and return an honest summary for the approval card. Any failure is logged and
+ * swallowed — enrichment never blocks the Foxit-only send, which is the graded
+ * path for the Foxit track.
  *
- * This MVP does not make live extraction calls — it proves the single-pipeline
- * wiring (prompt → optional Nutrient prep → Foxit assembly → gate) with one
- * PlanStore, while keeping single-credential repro intact. Live extraction
- * routing (routeFields against the invoice schema) is the next enrichment
- * increment once a representative calibration sample is committed.
+ * The approval card reflects what actually happened: how many fields auto-approved
+ * vs. need human review, the specific fields the OCR recognition floor caught, and
+ * the ungrounded (not_found) fields — it never claims a capability the code didn't
+ * exercise (gh #34).
  *
  * @param {{promptExcerpt?: string, docSource?: string|null, folderName: string}} parsed
  * @param {{journalPath?: string, docBytes?: Uint8Array}} [options]
@@ -145,9 +148,7 @@ export function shouldEnrichWithNutrient() {
 export async function enrichWithNutrient(parsed, options = {}) {
   if (!shouldEnrichWithNutrient()) return null;
 
-  // Resolve document bytes — explicit bytes win, then docSource file, else note and return null.
-  // Extraction without bytes is still "wired" — the pipeline shares one store and one approval
-  // queue, so the Foxit-only path is the single-pipeline path with Nutrient as optional enrichment.
+  // Resolve document bytes — explicit bytes win, then docSource file.
   let docBytes = options.docBytes ?? null;
   if (!docBytes && parsed.docSource) {
     const candidates = [
@@ -167,22 +168,106 @@ export async function enrichWithNutrient(parsed, options = {}) {
     }
   }
   if (!docBytes) {
-    // No bytes — still report that enrichment was wired but skipped for lack of a file.
-    // The approval card shows this so a judge can see the single-pipeline shape without needing a live key.
+    // No bytes — report that enrichment was wired but skipped for lack of a file.
     return { summary: "Nutrient enrichment wired — no document bytes (Foxit-only document will be assembled)" };
   }
 
-  // Verify the extraction adapter is importable (proves the stage is not mocked away).
+  // Both keys present and bytes available — make a real extraction call.
+  const key = process.env.NUTRIENT_DWS_EXTRACTION_API_KEY;
+  const { routeFields, summarizeRouting, INVOICE_SCHEMA } = await import(
+    "../mcp/nutrient/extraction-adapter.mjs"
+  );
+
+  const upload = docBytes instanceof Uint8Array ? docBytes : new Uint8Array(docBytes);
+  const body = new FormData();
+  body.append("file", new Blob([upload]), "document.pdf");
+  body.append(
+    "instructions",
+    JSON.stringify({
+      schema: INVOICE_SCHEMA,
+      parseConfig: { mode: "understand" },
+      options: { includeCitations: true, strict: false, multimodal: false },
+    }),
+  );
+
+  let res;
   try {
-    await import("../mcp/nutrient/extraction-adapter.mjs");
+    res = await fetch(EXTRACT_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "x-nutrient-api-version": API_VERSION },
+      body,
+      signal: AbortSignal.timeout(180_000),
+      redirect: "error",
+    });
   } catch (e) {
-    console.error(`[pipeline] Nutrient enrichment failed to load adapter (degraded to Foxit-only): ${e instanceof Error ? e.message : String(e)}`);
-    return null;
+    console.error(
+      `[pipeline] Nutrient extraction transport error (degraded to Foxit-only): ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return {
+      summary: `Nutrient enrichment — document staged (${upload.length} bytes), extraction transport error (Foxit-only path continues)`,
+      bytes: upload,
+    };
   }
-  const len = docBytes.length ?? docBytes.byteLength ?? 0;
-  const summary = `Nutrient enrichment wired — document staged (${len} bytes, extraction routing available)`;
-  console.error(`[pipeline] ${summary}`);
-  return { summary, bytes: docBytes instanceof Uint8Array ? docBytes : new Uint8Array(docBytes) };
+
+  const raw = await res.text();
+  if (!res.ok) {
+    console.error(`[pipeline] Nutrient extraction HTTP ${res.status} (degraded to Foxit-only): ${raw.slice(0, 200)}`);
+    return {
+      summary: `Nutrient enrichment — document staged (${upload.length} bytes), extraction HTTP ${res.status} (Foxit-only path continues)`,
+      bytes: upload,
+    };
+  }
+
+  let parsedResponse;
+  try {
+    parsedResponse = JSON.parse(raw);
+  } catch {
+    console.error("[pipeline] Nutrient extraction returned non-JSON (degraded to Foxit-only)");
+    return {
+      summary: `Nutrient enrichment — document staged (${upload.length} bytes), extraction returned non-JSON (Foxit-only path continues)`,
+      bytes: upload,
+    };
+  }
+  if (!parsedResponse?.output || typeof parsedResponse.output !== "object") {
+    console.error("[pipeline] Nutrient extraction response has no `output` object (degraded to Foxit-only)");
+    return {
+      summary: `Nutrient enrichment — document staged (${upload.length} bytes), extraction response malformed (Foxit-only path continues)`,
+      bytes: upload,
+    };
+  }
+
+  const output = parsedResponse.output;
+  // routeFields walks the UNION of output.data and output.metadata — not_found
+  // fields are absent from data but present in metadata, so a data-driven walk
+  // would silently drop the most important routing signal (finding A, build-plan.md:120).
+  const routed = routeFields(output.data ?? {}, output.metadata ?? {}, { documentType: "invoice" });
+  const summary = summarizeRouting(routed);
+
+  // Build an honest summary for the approval card — no string claims a
+  // capability the code didn't exercise (gh #34). The dissenting signal
+  // (OCR recognition floor) is named explicitly, because that is the entire story.
+  const human = routed.fields.filter((f) => f.route === "human");
+  const vetoedByOcr = routed.fields.filter((f) => f.reason.startsWith("recognitionScore"));
+  const notFound = routed.fields.filter((f) => f.match === "not_found");
+
+  const parts = [`Nutrient extraction: ${summary.auto}/${summary.total} fields auto-approved`];
+  if (human.length > 0) {
+    parts.push(`${human.length} need human review`);
+  }
+  if (vetoedByOcr.length > 0) {
+    const names = vetoedByOcr.map((f) => f.field).join(", ");
+    parts.push(`${vetoedByOcr.length} caught by OCR recognition floor: ${names}`);
+  }
+  if (notFound.length > 0) {
+    const names = notFound.map((f) => f.field).join(", ");
+    parts.push(`${notFound.length} ungrounded (not_found): ${names}`);
+  }
+  // Thresholds are uncalibrated — say so honestly (a test enforces calibrated: false).
+  parts.push(`thresholds calibrated: ${routed.limits.calibrated}`);
+
+  const summaryStr = parts.join(" — ");
+  console.error(`[pipeline] ${summaryStr}`);
+  return { summary: summaryStr, bytes: upload };
 }
 
 // --- Prompt-driven entry point ----------------------------------------------

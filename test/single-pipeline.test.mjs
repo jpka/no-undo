@@ -118,6 +118,95 @@ describe("single-pipeline (P6)", () => {
     assert.equal(r.bytes.length, 4);
   });
 
+  test("enrichWithNutrient makes a real extraction call and surfaces routing (gh #34)", async () => {
+    process.env.NUTRIENT_API_KEY = "k1";
+    process.env.NUTRIENT_DWS_EXTRACTION_API_KEY = "k2";
+    const { enrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
+
+    // Mock Nutrient extraction response — mirrors the live fixture shape:
+    // two not_found fields (absent from data, present in metadata) and
+    // recognitionScore values below the 0.8 floor on several fields.
+    const nutrientResponse = {
+      output: {
+        data: {
+          invoice_number: "INV-2026-0418",
+          vendor_name: "ACME Freight",
+          payer_name: "Kaniefsky Transport",
+          total_amount: 26.86,
+          tax_amount: 5.27,
+        },
+        metadata: {
+          invoice_number: { match: "id_match", confidence: 0.95, confidenceComponents: { groundingScore: 0.95 }, recognitionScore: 0.95 },
+          vendor_name: { match: "id_match", confidence: 0.95, confidenceComponents: { groundingScore: 0.95 }, recognitionScore: 0.76 },
+          payer_name: { match: "id_match", confidence: 0.95, confidenceComponents: { groundingScore: 0.95 }, recognitionScore: 0.61 },
+          total_amount: { match: "id_match", confidence: 0.97, confidenceComponents: { groundingScore: 0.95 }, recognitionScore: 0.68 },
+          tax_amount: { match: "id_match", confidence: 0.97, confidenceComponents: { groundingScore: 0.95 }, recognitionScore: 0.57 },
+          due_date: { match: "not_found", source_bboxes: [] },
+          po_number: { match: "not_found", source_bboxes: [] },
+        },
+      },
+    };
+
+    // Capture the extraction URL to prove the real endpoint was called.
+    let extractCalled = false;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      if (String(url).includes("api.nutrient.io/extraction/extract")) {
+        extractCalled = true;
+        return { ok: true, status: 200, text: async () => JSON.stringify(nutrientResponse), json: async () => nutrientResponse };
+      }
+      return origFetch(url, init);
+    };
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const r = await enrichWithNutrient({ folderName: "Test", docSource: null, promptExcerpt: "hi" }, { docBytes: bytes });
+    globalThis.fetch = origFetch;
+
+    // The extraction endpoint was actually called.
+    assert.ok(extractCalled, "expected the real /extraction/extract endpoint to be called");
+
+    // The summary reflects the honest routing outcome — not a "wired" stub.
+    assert.ok(r && typeof r.summary === "string");
+    assert.match(r.summary, /1\/7 fields auto-approved/);
+    assert.match(r.summary, /6 need human review/);
+    // The OCR recognition floor caught the dissenting fields.
+    assert.match(r.summary, /caught by OCR recognition floor/);
+    assert.match(r.summary, /total_amount/);
+    assert.match(r.summary, /tax_amount/);
+    // The not_found fields are named (they live only in metadata).
+    assert.match(r.summary, /ungrounded \(not_found\)/);
+    assert.match(r.summary, /due_date/);
+    assert.match(r.summary, /po_number/);
+    // Thresholds are uncalibrated — say so honestly.
+    assert.match(r.summary, /thresholds calibrated: false/);
+    // The bytes are returned unchanged (enrichment is reversible).
+    assert.equal(r.bytes.length, 4);
+  });
+
+  test("enrichWithNutrient degrades to Foxit-only on extraction HTTP error (gh #34)", async () => {
+    process.env.NUTRIENT_API_KEY = "k1";
+    process.env.NUTRIENT_DWS_EXTRACTION_API_KEY = "k2";
+    const { enrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("api.nutrient.io/extraction/extract")) {
+        return { ok: false, status: 403, text: async () => "Forbidden", json: async () => ({ error: "forbidden" }) };
+      }
+      return origFetch(url);
+    };
+
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const r = await enrichWithNutrient({ folderName: "Test", docSource: null, promptExcerpt: "hi" }, { docBytes: bytes });
+    globalThis.fetch = origFetch;
+
+    // Degrades gracefully — returns bytes, reports the HTTP error honestly.
+    assert.ok(r);
+    assert.match(r.summary, /HTTP 403/);
+    assert.match(r.summary, /Foxit-only path continues/);
+    assert.equal(r.bytes.length, 4);
+  });
+
   test("renderEsignPlan surfaces nutrientSummary", async () => {
     const { renderEsignPlan } = await import("../agent/esign-agent-loop.mjs");
     const plan = {
