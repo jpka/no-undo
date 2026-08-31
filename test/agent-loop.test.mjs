@@ -234,4 +234,34 @@ describe("agent-loop integration", () => {
       j.cleanup();
     }
   });
+
+  test("empty ESIGN_JOURNAL_PATH falls back to default journal", async () => {
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const origEnv = process.env.ESIGN_JOURNAL_PATH;
+    const errLines = [];
+    const origErr = console.error;
+    console.error = (...a) => errLines.push(a.join(" "));
+    process.env.ESIGN_JOURNAL_PATH = "";
+    try {
+      const result = await runAgentLoop({
+        folderName: "empty-env-journal-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        autoApprove: true,
+        allowFixturePdf: true,
+      });
+      assert.equal(result.status, "executed");
+      // Empty env var must NOT resolve to an empty path — it should fall back
+      // to the default journal location.
+      const journalLine = errLines.find((l) => l.includes("[agent] Journal:"));
+      assert.ok(journalLine, "expected [agent] Journal: line on stderr");
+      assert.doesNotMatch(journalLine, /\[agent\] Journal: \s*$/,
+        "empty env var should not produce an empty journal path");
+    } finally {
+      console.error = origErr;
+      if (origEnv === undefined) delete process.env.ESIGN_JOURNAL_PATH;
+      else process.env.ESIGN_JOURNAL_PATH = origEnv;
+    }
+  });
 });

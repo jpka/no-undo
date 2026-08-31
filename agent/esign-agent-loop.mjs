@@ -399,8 +399,9 @@ export async function runAgentLoop({
 }) {
   const resolvedJournal =
     journalPath ??
-    (process.env.ESIGN_JOURNAL_PATH &&
-      resolvePath(process.env.ESIGN_JOURNAL_PATH)) ??
+    (process.env.ESIGN_JOURNAL_PATH
+      ? resolvePath(process.env.ESIGN_JOURNAL_PATH)
+      : undefined) ??
     resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
 
   // Ensure the journal's parent directory exists — ESIGN_JOURNAL_PATH often
