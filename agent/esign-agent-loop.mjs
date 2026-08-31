@@ -21,7 +21,7 @@
  * the build plan flags as embarrassing for a PII demo).
  */
 
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startApprovalServer } from "safe-write-mcp-core";
 import {
@@ -40,8 +40,7 @@ import {
   isSentStatus,
 } from "../mcp/foxit/esign-adapter.mjs";
 import { parsePrompt, parseRecipientFlag, mergeRecipients, RecipientSchema } from "../mcp/foxit/prompt-parser.mjs";
-import { writeFileSync, writeSync, readFileSync, existsSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { writeFileSync, writeSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -399,7 +398,15 @@ export async function runAgentLoop({
   allowFixturePdf = false,
 }) {
   const resolvedJournal =
-    journalPath ?? resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
+    journalPath ??
+    (process.env.ESIGN_JOURNAL_PATH &&
+      resolvePath(process.env.ESIGN_JOURNAL_PATH)) ??
+    resolve(__dirname, "../mcp/foxit/.esign-journal.jsonl");
+
+  // Ensure the journal's parent directory exists — ESIGN_JOURNAL_PATH often
+  // points at a fresh location (demo runs, temp dirs). Fail clearly if not.
+  const journalDir = dirname(resolvedJournal);
+  mkdirSync(journalDir, { recursive: true });
 
   console.error(`[agent] Journal: ${resolvedJournal}`);
 
