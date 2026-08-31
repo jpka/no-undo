@@ -39,7 +39,7 @@ function defaultFixtures() {
   });
 }
 
-// --- Mock fetch -------------------------------------------------------------
+// --- Mock fetch ------------------------------------------------------------
 
 let originalFetch;
 
@@ -75,7 +75,7 @@ afterEach(() => {
   delete process.env.NO_FOXIT_MCP;
 });
 
-// --- Temp journal helper -----------------------------------------------------
+// --- Temp journal helper ----------------------------------------------------
 
 function tmpJournal() {
   const dir = join(tmpdir(), "no-undo-agent-test-" + Date.now() + "-" + Math.random().toString(36).slice(2));
@@ -198,6 +198,70 @@ describe("agent-loop integration", () => {
       assert.equal(result.status, "executed");
     } finally {
       j.cleanup();
+    }
+  });
+
+  // --- gh #48 regression test -------------------------------------------
+
+  test("ESIGN_JOURNAL_PATH env var overrides the journal location", async () => {
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const j = tmpJournal();
+    const origEnv = process.env.ESIGN_JOURNAL_PATH;
+    const errLines = [];
+    const origErr = console.error;
+    console.error = (...a) => errLines.push(a.join(" "));
+    process.env.ESIGN_JOURNAL_PATH = j.path;
+    try {
+      const result = await runAgentLoop({
+        folderName: "env-journal-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        autoApprove: true,
+        allowFixturePdf: true,
+      });
+      assert.equal(result.status, "executed");
+      // The [agent] Journal: line must reflect the env var path, not the default.
+      const journalLine = errLines.find((l) => l.includes("[agent] Journal:"));
+      assert.ok(journalLine, "expected [agent] Journal: line on stderr");
+      const escaped = j.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      assert.match(journalLine, new RegExp(escaped),
+        `journal line should report env var path ${j.path}, got: ${journalLine}`);
+    } finally {
+      console.error = origErr;
+      if (origEnv === undefined) delete process.env.ESIGN_JOURNAL_PATH;
+      else process.env.ESIGN_JOURNAL_PATH = origEnv;
+      j.cleanup();
+    }
+  });
+
+  test("empty ESIGN_JOURNAL_PATH falls back to default journal", async () => {
+    const { runAgentLoop } = await import("../agent/esign-agent-loop.mjs");
+    const origEnv = process.env.ESIGN_JOURNAL_PATH;
+    const errLines = [];
+    const origErr = console.error;
+    console.error = (...a) => errLines.push(a.join(" "));
+    process.env.ESIGN_JOURNAL_PATH = "";
+    try {
+      const result = await runAgentLoop({
+        folderName: "empty-env-journal-test",
+        recipients: [
+          { firstName: "Alice", lastName: "Smith", email: "alice@example.com", resolved: true },
+        ],
+        autoApprove: true,
+        allowFixturePdf: true,
+      });
+      assert.equal(result.status, "executed");
+      // Empty env var must NOT resolve to an empty path — it should fall back
+      // to the default journal location.
+      const journalLine = errLines.find((l) => l.includes("[agent] Journal:"));
+      assert.ok(journalLine, "expected [agent] Journal: line on stderr");
+      assert.doesNotMatch(journalLine, /\[agent\] Journal: \s*$/,
+        "empty env var should not produce an empty journal path");
+    } finally {
+      console.error = origErr;
+      if (origEnv === undefined) delete process.env.ESIGN_JOURNAL_PATH;
+      else process.env.ESIGN_JOURNAL_PATH = origEnv;
     }
   });
 });
