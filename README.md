@@ -4,7 +4,11 @@
 >
 > [DevNetwork [API + Cloud + AI] Hackathon 2026](https://api-cloud-ai-hackathon-2026.devpost.com/) — Foxit eSign · Nutrient DWS · Overall
 
-One prompt in, signed document out. Every reversible step runs unattended. The one irreversible step — sending for signature — stops at a human approval gate that survives a process crash without double-sending.
+One prompt in, signed document out. A messy invoice is parsed, its fields routed by confidence, its third-party PII redacted and the removal **verified against the document itself**, and only then does a human see it. Every step up to that point is reversible and runs unattended. The one irreversible step — sending for signature — stops at the gate, and survives a process crash without double-sending.
+
+**Where DWS does the heavy lifting:** `/extraction/extract` supplies the per-field confidence signals that decide what a human must look at, `/build` applies the PII redactions, and `/extraction/parse` reads the redacted document back to prove the values are gone — because a redaction call returns HTTP 200 whether or not it removed anything.
+
+**Where Foxit does the heavy lifting:** the PDF Services MCP server assembles the document (`pdf_from_html`) across ~40 reversible tools, and the eSign API — deliberately outside that catalog — performs the one action that cannot be undone.
 
 **[Live showcase](https://jpka.github.io/no-undo/)** (rendered from [`docs/showcase.html`](docs/showcase.html))
 
@@ -43,14 +47,45 @@ Take this freight invoice, redact the PII, and send it to Alice and Bob for sign
 becomes
 
 1. **Prompt parsed** — `mcp/foxit/prompt-parser.mjs` extracts `{folderName, recipients, docSource, instructions}` into a typed payload. The parsed fields are echoed back in the approval card for human correction before any irreversible step.
-2. **Foxit PDF assembly** — `mcp/foxit/pdf-assembly.mjs` renders the invoice data as HTML, then calls `pdf_from_html` → `get_task_result` via the Foxit PDF Services MCP server. The assembled bytes become the document; their SHA-256 becomes the digest line in the approval card. Falls back to a deterministic fixture when `NO_FOXIT_MCP=1` or credentials are absent.
-3. **The gate** — `agent/esign-agent-loop.mjs` renders the plan (prompt excerpt, recipients, document digest, irrevocability warning) and waits for human approval. The approval server binds an ephemeral localhost port.
-4. **Irreversible send** — `mcp/foxit/esign-adapter.mjs` calls the Foxit eSign API directly (not via MCP) with client-side dedup: the plan token keys a durable ledger, and `folderStatus` reconciliation (DRAFT vs SHARED) ensures the send happens exactly once.
-5. **Signed document out** — after the send, the adapter polls `GET /esign/api/v1/folders/myfolder?folderId=` until `folderStatus == EXECUTED`, then downloads via `GET /esign/api/v1/folders/document/download?folderId=&docNumber=`.
+2. **Foxit PDF assembly** — `mcp/foxit/pdf-assembly.mjs` renders the invoice data as HTML, then calls `pdf_from_html` → `get_task_result` via the Foxit PDF Services MCP server. Falls back to a deterministic fixture when `NO_FOXIT_MCP=1` or credentials are absent.
+3. **Nutrient extraction + confidence routing** — `mcp/nutrient/extraction-adapter.mjs` sends the source document to `/extraction/extract` and routes every field: match label first, confidence second, grounding and OCR-recognition floors as vetoes. The card reports how many fields auto-approved, which ones the recognition floor caught, and which came back ungrounded.
+4. **Nutrient redaction, then verification** — `mcp/nutrient/pipeline-redaction.mjs` applies the PII redactions via `/build`, then **reads the redacted document back** through `/extraction/parse` and confirms every target value is gone and every signature field survived. Redaction that cannot be proven fails the run. This is not caution for its own sake — see [the VIN](#what-makes-this-different).
+5. **The gate** — `agent/esign-agent-loop.mjs` renders the plan (prompt excerpt, recipients, extraction routing, what was redacted and the confirmation it is gone, document SHA-256, irrevocability warning) and waits for human approval. The approval server binds an ephemeral localhost port.
+6. **Irreversible send** — `mcp/foxit/esign-adapter.mjs` calls the Foxit eSign API directly (not via MCP) with client-side dedup: the plan token keys a durable ledger, and `folderStatus` reconciliation (DRAFT vs SHARED) ensures the send happens exactly once.
+7. **Signed document out** — after the send, the adapter polls `GET /esign/api/v1/folders/myfolder?folderId=` until `folderStatus == EXECUTED`, then downloads via `GET /esign/api/v1/folders/document/download?folderId=&docNumber=`.
 
-### Optional: Nutrient DWS enrichment
+### The document the human reviews
 
-When `NUTRIENT_API_KEY` + `NUTRIENT_DWS_EXTRACTION_API_KEY` are present, the pipeline enriches before the gate: extraction-with-confidence routing and staged PII redaction. Without them, the pipeline reproduces with a single Foxit credential pair — the Foxit track's judged path.
+Everything above step 5 is reversible and runs unattended. What reaches the gate is the document that will actually be sent — assembled, redacted, and verified:
+
+```
+✍️  Sign: Freight Invoice
+
+  Prompt:              Take this freight invoice, redact the PII, and send it
+                       to Alice and Bob for signature.
+  Recipients:          1. Alice Smith <alice@example.com>
+                       2. Bob Jones <bob@example.com>
+  Document SHA-256:    f3589f35e3de7c36… (via enriched-source)
+
+  Nutrient extraction: 2/16 fields auto-approved — 14 need human review —
+                       11 caught by OCR recognition floor: vendor_name,
+                       payer_name, line_items[0].description, … —
+                       1 ungrounded (not_found): po_number —
+                       thresholds calibrated: false
+
+  Nutrient redaction:  3 target set(s) applied (preset: email-address;
+                       preset: north-american-phone-number; regex (19 chars,
+                       character classes only) — pattern withheld from this
+                       view) — 5 value(s) verified absent from the outgoing
+                       document, 2 signature field(s) verified intact
+
+  ⚠️ Irreversible:     Approving sends this document to the listed recipients
+                       for signature. This action cannot be undone.
+```
+
+Two details that are deliberate. The regex target is described by shape and never printed — a redaction pattern embeds the values it hides, so putting it on the review screen would leak them. And `thresholds calibrated: false` is on the card because it is true; a gate that hides its own uncertainty is decoration.
+
+Without Nutrient keys the same pipeline reproduces on a single Foxit credential pair (`NO_NUTRIENT=1`) — the Foxit track's judged path, unchanged.
 
 ---
 
@@ -98,8 +133,6 @@ NO_FOXIT_MCP=1 node agent/esign-agent-loop.mjs --auto-approve --prompt "Take thi
 
 ### Path B — Full pipeline (Foxit + Nutrient)
 
-> **Note:** Nutrient enrichment is currently a stub — it proves the single-pipeline wiring (prompt → enrichment → assembly → gate) but does not make live extraction calls. The Foxit path is fully functional. See [Known gaps](#known-gaps).
-
 ```bash
 # 1. Add both credential pairs to .env:
 #    FOXIT_CLIENT_ID=...
@@ -107,16 +140,32 @@ NO_FOXIT_MCP=1 node agent/esign-agent-loop.mjs --auto-approve --prompt "Take thi
 #    NUTRIENT_API_KEY=...
 #    NUTRIENT_DWS_EXTRACTION_API_KEY=...
 
-# 2. Run with Nutrient enrichment
+# 2. Run the full pipeline: assembly → extraction → redaction → verify → gate → send
 source .env
-node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+node agent/esign-agent-loop.mjs \
+  --doc messy \
+  --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature." \
+  --recipient "Alice Smith <you@example.com>"
 ```
+
+`--doc <path>` supplies the document extraction *reads*. `--doc messy` uses the committed generator (skewed text, OCR-hostile glyphs, no PO number) so the run reproduces without shipping a binary. It matters which document extraction sees:
+
+| Extraction reads | Auto-approved | Caught by the OCR recognition floor |
+| --- | --- | --- |
+| the assembled invoice (clean render) | 0 / 16 | 0 |
+| `--doc messy` (a bad scan) | 2 / 16 | 11, named on the card |
+
+The recognition floor only earns its place on a document that was actually scanned badly. The card names which document extraction ran on, because those two rows say very different things about how much judgement was exercised.
+
+The document that gets **signed** is always the assembled, redacted one — `--doc` is an extraction input and is never signed.
+
+Omit `--recipient` and the run refuses to send: the parser's fallback addresses are synthesized, and synthesized addresses are not sent to. Each run costs 3 Nutrient credits (one billed `/build` apply, roughly one credit per redaction action) plus two extraction calls.
 
 ### Run the test suite
 
 ```bash
 npm test
-# 233 tests, 41 suites — all green, no live API calls
+# 255 tests, 45 suites — all green, no live API calls
 ```
 
 Every extraction claim in this repo is backed by a committed API response. The fixtures and the test suite need no credentials; the probes make live billed calls and do.
@@ -138,22 +187,28 @@ Every extraction claim in this repo is backed by a committed API response. The f
   └───────────────────────────┬─────────────────────────────────────┘
                               │
               ┌───────────────┴───────────────┐
-              │ (optional, when keys present)  │
+              │                               │
               ▼                               ▼
   ┌───────────────────────┐     ┌───────────────────────────────────┐
-  │  Nutrient DWS         │     │  mcp/foxit/pdf-assembly.mjs       │
-  │  Extraction routing   │     │  HTML → pdf_from_html → bytes     │
-  │  Staged redaction     │     │  (reversible MCP calls)           │
-  └───────────┬───────────┘     └───────────────────┬───────────────┘
-              │                                     │
-              └──────────────┬──────────────────────┘
-                             │
-                             ▼
+  │  mcp/foxit/           │     │  Nutrient DWS (reversible)        │
+  │  pdf-assembly.mjs     │────▶│  /extraction/extract → routing    │
+  │  HTML → pdf_from_html │     │  /build → applyRedactions         │
+  │  (reversible MCP)     │     │  /extraction/parse → VERIFY       │
+  └───────────────────────┘     └───────────────────┬───────────────┘
+                                                    │
+                        ┌───────────────────────────┴──────────────┐
+                        │  Verification failed?                    │
+                        │  → abort. No draft folder is created.    │
+                        │  A redaction that cannot be proven does  │
+                        │  not become a send.                      │
+                        └───────────────────────────┬──────────────┘
+                                                    │ verified
+                                                    ▼
   ┌─────────────────────────────────────────────────────────────────┐
   │  Approval gate                                                  │
   │  agent/esign-agent-loop.mjs + safe-write-mcp-core               │
-  │  Renders: prompt excerpt, recipients, document SHA-256,         │
-  │  irrevocability warning. Human approves or rejects.             │
+  │  Renders: prompt, recipients, extraction routing, what was      │
+  │  redacted + proof it is gone, document SHA-256, irrevocability.  │
   │  Crash-safe: beginExecute fsyncs BEFORE the gateway call.       │
   └───────────────────────────┬─────────────────────────────────────┘
                               │
@@ -169,7 +224,6 @@ Every extraction claim in this repo is backed by a committed API response. The f
   ┌─────────────────────────────────────────────────────────────────┐
   │  Signed document                                                │
   │  pollUntilSigned → downloadSignedDocument                       │
-  │  Polls EXECUTED, then GET /document/download                    │
   └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -185,6 +239,31 @@ Then `agentic` mode — double the cost, VLM-augmented — got the totals right 
 
 The signals that tell you an action is safe are not the signals that tell you it is correct. A gate that conflates them is decoration.
 
+**The same API lies twice, in opposite directions.** Extraction reports a wrong number confidently. Redaction reports a successful removal that never happened.
+
+`preset: "vin"` is in `CONFIRMED_PRESETS` because it returned HTTP 200 when probed. It does return 200. It also does not redact. Isolated, one target at a time, against a document containing the well-formed VIN `1FUJGLDR8CLBP8834`:
+
+| Target | HTTP | Output | VIN after apply |
+| --- | --- | --- | --- |
+| `preset: "vin"` | 200 | valid PDF, 67,142 bytes | **still present** |
+| `regex: "[A-HJ-NPR-Z0-9]{17}"` | 200 | valid PDF, 69,467 bytes | removed |
+
+Both calls succeeded. Both returned a document that opens. One did nothing, and the only difference visible to a caller is a byte count — which is not a signal anyone thresholds on. `CONFIRMED_PRESETS` recorded which identifiers the API *accepts*; that is a different question from which ones *match*, and the name had been carrying more weight than the probe behind it.
+
+So the pipeline does not trust the apply call. It re-reads the redacted document and confirms each value is gone before anything reaches the gate.
+
+**The intermediate artifact is a trap.** `stageRedactions` returns a PDF that renders black boxes over the PII. All five planted values are still recoverable from it with one API call:
+
+| Artifact | Bytes | PII surviving | Signature fields |
+| --- | --- | --- | --- |
+| assembled | 66,463 | 5 / 5 | intact |
+| **staged** | 76,684 | **5 / 5** | — |
+| applied | 78,461 | **0 / 5** | intact |
+
+An operator who eyeballs the staged PDF, sees the boxes, and forwards it has published everything they believed they had removed. The pipeline discards those bytes and keeps only the inventory. `docs/fixtures/probe-staged.pdf` is committed *because* it is unredacted — it is the evidence, not an accident.
+
+**Redaction boxes destroy signature fields they overlap.** The first version rendered each signer's email next to their Foxit Text Tag; redacting the email destroyed the tag, and the gateway refuses a document with no signature field. Signer addresses no longer appear in the document body — Foxit already carries them in `parties`. The verification step asserts the tags survived, which is the same check that catches this.
+
 **Crash-safety is a property, not a promise.** `beginExecute()` journals `executing` and fsyncs *before* the gateway call. A process that dies mid-send leaves a plan visibly stuck in `executing` — a queryable state, not a forgotten one. On restart the journal replays and the core asks the gateway the only question that matters: `folderStatus` DRAFT (didn't send) vs SHARED (did send). The dangerous window straddles the call, and most designs don't model it.
 
 ---
@@ -198,12 +277,14 @@ mcp/foxit/pdf-assembly.mjs     — HTML → pdf_from_html → bytes (real Foxit 
 mcp/foxit/esign-adapter.mjs    — crash-safe eSign lifecycle + dedup ledger
 mcp/foxit/esign-probe.mjs      — live API probe (committed fixtures)
 mcp/foxit/call-tool.mjs        — MCP stdio transport
+mcp/nutrient/pipeline-redaction.mjs — stage → apply → verify, fail-closed
 mcp/nutrient/                  — extraction routing, staged redaction
 mcp/lib/jsonl-audit-sink.mjs   — hash-chained, fsync'd audit trail
-test/                          — 233 tests, all green, no live API
+test/                          — 255 tests, all green, no live API
 docs/showcase.html             — judge-facing walkthrough
 docs/demo-video-script.md      — shooting spec for the demo video
-docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
+docs/nutrient-redaction-sep1.md — six probe findings behind the redaction design
+docs/fixtures/                 — committed API responses + redaction artifacts
 ```
 
 ---
@@ -212,7 +293,8 @@ docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
 
 - **Thresholds are uncalibrated.** Every entry in `THRESHOLDS` is marked `calibrated: false`, and a test asserts none of them claims otherwise. Calibrating them needs a representative sample per document type, not one invoice. Until then the defaults are deliberately strict (over-refer rather than under-refer).
 - **Approval-server authentication** is upstream in `safe-write-mcp-core` (tracked as [#20](https://github.com/jpka/safe-write-mcp-core/issues/20)): the server binds loopback and checks `Host`/`Origin`/`Sec-Fetch-Site`, but carries no shared secret. The threat model the header checks cover is a malicious browser page, not a hostile local process.
-- **Signed-document retrieval** is implemented and exercised end-to-end: `agent/esign-agent-loop.mjs` drives `pollUntilSigned` → `downloadSignedDocument`, `test/signed-doc-retrieval.test.mjs` covers it, and a real signed document was downloaded (poll until `EXECUTED`, then `GET /esign/api/v1/folders/document/download`).
+- **Redaction targets are a fixed list, not a detector.** `DEFAULT_TARGETS` covers email, North American phone, and a VIN regex, because those are what this invoice carries and what was probed to actually match. A document with a passport number or an IBAN would pass through untouched, and the verification step would report success — it confirms the values it was *told* to remove are gone, not that the document is free of PII. Deciding what to redact is still a human's job here.
+- **Verification reads the document once.** It confirms the target values are absent from `/extraction/parse` output. A value rendered as an image, or split across text runs in a way the parser rejoins differently, could evade both the redactor and the check.
 
 ---
 
@@ -221,8 +303,8 @@ docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
 | Track | Entry |
 |-------|-------|
 | **Foxit** — *Your Agent Shouldn't Sign That* | Plain prompt → Foxit PDF assembly (MCP) → approval gate → eSign (direct API) → signed PDF. Signing outside MCP because the catalog is reversible by design. |
-| **Nutrient DWS** — *Turn Documents Into Something People Actually Trust* | Extraction-with-confidence routing + staged redaction, both behind the same gate. |
-| **Overall** | Progress: two shipped servers, a published npm core, 233 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
+| **Nutrient DWS** — *Turn messy documents into something trustworthy* | Detects and redacts third-party PII, verifies the removal against the document itself, routes the result for human approval, and ends in a signed, tamper-evident PDF with a hash-chained audit trail. DWS does the extraction-with-confidence routing (`/extraction/extract`), the redaction (`/build`), and the verification read-back (`/extraction/parse`). |
+| **Overall** | Progress: two shipped servers, a published npm core, 255 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
 
 ---
 
