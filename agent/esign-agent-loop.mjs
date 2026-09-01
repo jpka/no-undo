@@ -92,7 +92,14 @@ function renderEsignPlan(plan) {
   // Optional Nutrient enrichment summary (P6 pipeline: extraction → redaction before gate)
   const nutrientSummary = plan.extra?.nutrientSummary;
   if (nutrientSummary) {
-    details.push({ label: "Nutrient enrichment", value: nutrientSummary });
+    details.push({ label: "Nutrient extraction", value: nutrientSummary });
+  }
+  // What was removed from the document, and the confirmation that it is gone.
+  // The reviewer needs both: the detector's inventory says what was looked for,
+  // the verification says what is actually absent from the bytes being sent.
+  const redactionSummary = plan.extra?.redactionSummary;
+  if (redactionSummary) {
+    details.push({ label: "Nutrient redaction", value: redactionSummary });
   }
   details.push({ label: "Agent's reason", value: plan.reason || "(none given)" });
   details.push({
@@ -263,7 +270,9 @@ export async function enrichWithNutrient(parsed, options = {}) {
   const vetoedByOcr = routed.fields.filter((f) => f.reason.startsWith("recognitionScore"));
   const notFound = routed.fields.filter((f) => f.match === "not_found");
 
-  const parts = [`Nutrient extraction: ${summary.auto}/${summary.total} fields auto-approved`];
+  // The approval card already labels this line "Nutrient extraction"; repeating
+  // the words in the value reads as a stutter on the card the judge looks at.
+  const parts = [`${summary.auto}/${summary.total} fields auto-approved`];
   if (human.length > 0) {
     parts.push(`${human.length} need human review`);
   }
@@ -279,7 +288,7 @@ export async function enrichWithNutrient(parsed, options = {}) {
   parts.push(`thresholds calibrated: ${routed.limits.calibrated}`);
 
   const summaryStr = parts.join(" — ");
-  console.error(`[pipeline] ${summaryStr}`);
+  console.error(`[pipeline] Nutrient extraction: ${summaryStr}`);
   return { summary: summaryStr, bytes: upload };
 }
 
@@ -307,12 +316,74 @@ export async function runFromPrompt(prompt, options = {}) {
     return { firstName: r.firstName, lastName: r.lastName, email: r.email, resolved: true };
   });
   const recipients = mergeRecipients(parsed.recipients, overrides);
+  let nutrientSummary = null;
   console.error(`[agent] Parsed prompt: folderName="${parsed.folderName}" recipients=${recipients.length}`);
-  // P6: optional Nutrient enrichment (reversible, before gate, one PlanStore).
-  // Foxit-only remains the single-credential repro when keys are absent.
-  const enrichment = await enrichWithNutrient(parsed, { docBytes: options.docBytes, journalPath: options.journalPath });
-  const nutrientSummary = enrichment?.summary ?? null;
-  if (nutrientSummary) console.error(`[agent] Nutrient: ${nutrientSummary}`);
+  // Nutrient stage (reversible, before the gate, one PlanStore). Foxit-only
+  // remains the single-credential repro when keys are absent.
+  //
+  // Ordering matters and was wrong before: enrichment ran BEFORE the document
+  // existed, so `docBytes` was null on the demo prompt and every Nutrient call
+  // was skipped with "no document bytes". Assembly now happens here, so both
+  // extraction and redaction operate on a real document.
+  let pdfBytes = options.docBytes ?? null;
+  let signatureTagsVerified = null;
+  let redactionSummary = null;
+
+  if (shouldEnrichWithNutrient()) {
+    const { assemblePdf } = await import("../mcp/foxit/pdf-assembly.mjs");
+    const assemblePayload = {
+      folderName: parsed.folderName,
+      recipients,
+      instructions: parsed.instructions,
+      docSource: parsed.docSource,
+    };
+    console.error("[agent] Assembling document via Foxit MCP (reversible)…");
+    const assembled = await assemblePdf(assemblePayload, {});
+    const assembledBytes = new Uint8Array(Buffer.from(assembled.base64, "base64"));
+    console.error(`[agent] Assembled ${assembledBytes.length} bytes via ${assembled.via}`);
+
+    // Extraction runs on the caller-supplied source document when there is one
+    // (the messy invoice), otherwise on the document we just assembled. The
+    // approval card names which, because the two say very different things
+    // about how much judgement the routing actually exercised.
+    const extractionBytes = options.docBytes ?? assembledBytes;
+    const extractionSource = options.docBytes ? "source document" : "assembled invoice";
+    const enrichment = await enrichWithNutrient(parsed, {
+      docBytes: extractionBytes,
+      journalPath: options.journalPath,
+    });
+    if (enrichment?.summary) {
+      nutrientSummary = `${enrichment.summary} [on the ${extractionSource}]`;
+      console.error(`[agent] Nutrient: ${nutrientSummary}`);
+    }
+
+    // Redaction: stage → apply → verify, on the assembled document, before the
+    // gate. Unlike extraction, this CANNOT degrade to a Foxit-only send: the
+    // prompt asked for the PII to be removed, so failing to remove it must stop
+    // the run rather than quietly ship the document. Aborting here also means no
+    // draft folder is created, so there is nothing left in DRAFT to clean up.
+    const { redactForSignature, piiValuesOf } = await import("../mcp/nutrient/pipeline-redaction.mjs");
+    const { INVOICE } = await import("../mcp/fixtures/invoice-data.mjs");
+    const expectedTagSeqs = recipients.map((_, i) => i + 1);
+    console.error("[agent] Nutrient redaction: stage → apply → verify…");
+    const red = await redactForSignature(assembledBytes, {
+      mustBeAbsent: piiValuesOf(INVOICE),
+      expectedTagSeqs,
+    });
+    if (!red.ok) {
+      console.error(`[agent] ABORT: redaction ${red.stage} step failed — ${red.error}`);
+      return {
+        status: "not_executed",
+        error: `redaction ${red.stage} failed: ${red.error}`,
+        code: "REDACTION_FAILED",
+      };
+    }
+    pdfBytes = red.bytes;
+    signatureTagsVerified = expectedTagSeqs;
+    redactionSummary = red.summary;
+    console.error(`[agent] Nutrient redaction: ${red.summary}`);
+    console.error(`[agent] Redaction bytes: assembled ${assembledBytes.length} → staged ${red.stagedBytes} → applied ${red.appliedBytes}`);
+  }
   return runAgentLoop({
     folderName: parsed.folderName,
     recipients,
@@ -323,7 +394,9 @@ export async function runFromPrompt(prompt, options = {}) {
     promptInstructions: parsed.instructions,
     promptDocSource: parsed.docSource,
     nutrientSummary,
-    pdfBytes: enrichment?.bytes ?? null,
+    redactionSummary,
+    pdfBytes,
+    signatureTagsVerified,
     allowUntaggedEnrichedPdf: options.allowUntaggedEnrichedPdf ?? false,
     pollForSigned: options.pollForSigned,
     pollTimeoutMs: options.pollTimeoutMs,
@@ -389,7 +462,9 @@ export async function runAgentLoop({
   promptInstructions = null,
   promptDocSource = null,
   nutrientSummary = null,
+  redactionSummary = null,
   pdfBytes = null,
+  signatureTagsVerified = null,
   allowUntaggedEnrichedPdf = false,
   pollForSigned = false,
   pollTimeoutMs = 30_000,
@@ -464,10 +539,11 @@ export async function runAgentLoop({
     console.error("[agent] Creating draft folder…");
     const payload = { folderName, recipients };
     const created = await createEsignFolder(store, payload, {
-      extra: { promptExcerpt, promptInstructions, promptDocSource, nutrientSummary },
+      extra: { promptExcerpt, promptInstructions, promptDocSource, nutrientSummary, redactionSummary },
       instructions: promptInstructions,
       docSource: promptDocSource,
       pdfBytes,
+      signatureTagsVerified,
       allowUntaggedEnrichedPdf,
     });
     if (created.error) {

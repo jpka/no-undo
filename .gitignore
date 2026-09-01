@@ -6,7 +6,13 @@ tool-output/node_modules/
 dist/
 .tmp/
 .DS_Store
-esign-journal.jsonl
+.esign-journal.jsonl
 .token-map.json
 .webhook-dedup.json
 test-docs
+test-docs/
+
+# e-sign payloads / PII — do not publish document contents, journal payloads or audit chains
+*-journal.jsonl
+*-audit.jsonl
+.tmp-*

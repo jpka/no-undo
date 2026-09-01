@@ -247,7 +247,7 @@ describe("single-pipeline (P6)", () => {
     };
     const rendered = renderEsignPlan(plan);
     const labels = rendered.details.map((d) => d.label);
-    assert.ok(labels.includes("Nutrient enrichment"), `labels: ${labels.join(", ")}`);
+    assert.ok(labels.includes("Nutrient extraction"), `labels: ${labels.join(", ")}`);
   });
 
   test("runFromPrompt: Foxit-only path still executes end-to-end (no keys)", async () => {
@@ -276,7 +276,7 @@ describe("single-pipeline (P6)", () => {
     }
   });
 
-  test("runFromPrompt: with Nutrient keys, enrichment does not block execution", async () => {
+  test("runFromPrompt: redaction failure aborts the run before a draft exists", async () => {
     process.env.NUTRIENT_API_KEY = "k1";
     process.env.NUTRIENT_DWS_EXTRACTION_API_KEY = "k2";
     const { runFromPrompt, shouldEnrichWithNutrient } = await import("../agent/esign-agent-loop.mjs");
@@ -297,7 +297,19 @@ describe("single-pipeline (P6)", () => {
           ],
         },
       );
-      assert.equal(result.status, "executed");
+      // Contract change (Sep 1): extraction degrades to a Foxit-only send on any
+      // failure, because a missing confidence signal does not make the document
+      // unsafe. Redaction does NOT degrade. The prompt asked for PII removal, so a
+      // pipeline that cannot prove the PII is gone must refuse to send rather than
+      // ship the document unredacted. Here the Nutrient keys are fake, so the
+      // /build call fails and the run aborts.
+      //
+      // It aborts BEFORE createEsignFolder, so no draft folder is left in DRAFT
+      // to clean up — assert the absence of a folderId, not just the status.
+      assert.equal(result.status, "not_executed");
+      assert.equal(result.code, "REDACTION_FAILED");
+      assert.match(result.error, /redaction (stage|apply|verify) failed/);
+      assert.equal(result.folderId, undefined, "no draft folder may be created when redaction fails");
     } finally {
       j.cleanup();
     }
@@ -314,7 +326,7 @@ describe("single-pipeline (P6)", () => {
       reason: "test",
     };
     const rendered = renderEsignPlan(plan);
-    assert.ok(rendered.details.some((d) => d.label === "Nutrient enrichment" && d.value.includes("wired")));
+    assert.ok(rendered.details.some((d) => d.label === "Nutrient extraction" && d.value.includes("wired")));
     assert.ok(rendered.details.some((d) => d.label === "Document SHA-256"));
   });
 

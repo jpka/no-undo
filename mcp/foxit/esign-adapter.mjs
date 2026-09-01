@@ -719,6 +719,19 @@ export async function createEsignFolder(store, payload, options = {}) {
   // user's document with a generated fixture (gh #53 review).
   if (options.pdfBytes) {
     try {
+      // `signatureTagsVerified` is an attestation from a caller that has READ the
+      // document back and confirmed the tags, rather than guessed from bytes.
+      // The raw-byte scan below cannot see text in a real PDF from
+      // `pdf_from_html`: it lives in FlateDecode streams under subset-font
+      // encoding, so the scan reports zero tags for a document that provably
+      // has them, and the enriched path could never succeed
+      // (docs/nutrient-redaction-sep1.md, Finding 5). The pipeline verifies via
+      // /extraction/parse in mcp/nutrient/pipeline-redaction.mjs and passes the
+      // verified sequences here. Callers that pass nothing keep the old
+      // best-effort scan unchanged.
+      const attested = Array.isArray(options.signatureTagsVerified)
+        ? options.signatureTagsVerified
+        : null;
       const buf = Buffer.isBuffer(options.pdfBytes)
         ? options.pdfBytes
         : options.pdfBytes instanceof Uint8Array
@@ -731,7 +744,11 @@ export async function createEsignFolder(store, payload, options = {}) {
         const needed = (payload.recipients || []).length;
         const missing = [];
         for (let i = 1; i <= needed; i++) if (!tagSeqs.has(i)) missing.push(i);
-        const hasTag = needed > 0 ? missing.length === 0 : tagSeqs.size > 0;
+        const scanHasTag = needed > 0 ? missing.length === 0 : tagSeqs.size > 0;
+        // An attestation covering every required party supersedes the scan.
+        const attestedAll =
+          attested !== null && (needed > 0 ? missing.every((seq) => attested.includes(seq)) : attested.length > 0);
+        const hasTag = scanHasTag || attestedAll;
         if (!hasTag && !options.allowUntaggedEnrichedPdf) {
           const detail = missing.length
             ? `missing tags for party ${missing.join(", ")} (found ${[...tagSeqs].sort((a,b)=>a-b).join(", ") || "none"})`

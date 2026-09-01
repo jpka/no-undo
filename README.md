@@ -116,7 +116,7 @@ node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoi
 
 ```bash
 npm test
-# 191 tests, 33 suites — all green, no live API calls
+# 233 tests, 41 suites — all green, no live API calls
 ```
 
 Every extraction claim in this repo is backed by a committed API response. The fixtures and the test suite need no credentials; the probes make live billed calls and do.
@@ -200,7 +200,7 @@ mcp/foxit/esign-probe.mjs      — live API probe (committed fixtures)
 mcp/foxit/call-tool.mjs        — MCP stdio transport
 mcp/nutrient/                  — extraction routing, staged redaction
 mcp/lib/jsonl-audit-sink.mjs   — hash-chained, fsync'd audit trail
-test/                          — 191 tests, all green, no live API
+test/                          — 233 tests, all green, no live API
 docs/showcase.html             — judge-facing walkthrough
 docs/demo-video-script.md      — shooting spec for the demo video
 docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
@@ -212,7 +212,7 @@ docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
 
 - **Thresholds are uncalibrated.** Every entry in `THRESHOLDS` is marked `calibrated: false`, and a test asserts none of them claims otherwise. Calibrating them needs a representative sample per document type, not one invoice. Until then the defaults are deliberately strict (over-refer rather than under-refer).
 - **Approval-server authentication** is upstream in `safe-write-mcp-core` (tracked as [#20](https://github.com/jpka/safe-write-mcp-core/issues/20)): the server binds loopback and checks `Host`/`Origin`/`Sec-Fetch-Site`, but carries no shared secret. The threat model the header checks cover is a malicious browser page, not a hostile local process.
-- **Signed-document retrieval** is cut-list #1 until the live probe confirms the download route. The send is idempotent and audit-logged; polling never re-sends, only waits for signers to finish.
+- **Signed-document retrieval** is implemented and exercised end-to-end: `agent/esign-agent-loop.mjs` drives `pollUntilSigned` → `downloadSignedDocument`, `test/signed-doc-retrieval.test.mjs` covers it, and a real signed document was downloaded (poll until `EXECUTED`, then `GET /esign/api/v1/folders/document/download`).
 
 ---
 
@@ -222,7 +222,7 @@ docs/fixtures/                 — committed API responses (Gate 0, Nutrient)
 |-------|-------|
 | **Foxit** — *Your Agent Shouldn't Sign That* | Plain prompt → Foxit PDF assembly (MCP) → approval gate → eSign (direct API) → signed PDF. Signing outside MCP because the catalog is reversible by design. |
 | **Nutrient DWS** — *Turn Documents Into Something People Actually Trust* | Extraction-with-confidence routing + staged redaction, both behind the same gate. |
-| **Overall** | Progress: two shipped servers, a published npm core, 191 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
+| **Overall** | Progress: two shipped servers, a published npm core, 233 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
 
 ---
 

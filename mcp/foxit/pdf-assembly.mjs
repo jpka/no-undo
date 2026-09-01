@@ -88,7 +88,7 @@ export function buildInvoiceHtml(payload) {
   const recipientRows = (payload.recipients || [])
     .map(
       (r) =>
-        `<tr><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(r.firstName)} ${escapeHtml(r.lastName)}</td><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(r.email)}</td><td style="padding:8px;border:1px solid #ddd;">FILL_FIELDS_AND_SIGN</td></tr>`
+        `<tr><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(r.firstName)} ${escapeHtml(r.lastName)}</td><td style="padding:8px;border:1px solid #ddd;">FILL_FIELDS_AND_SIGN</td></tr>`
     )
     .join("\n");
 
@@ -99,6 +99,24 @@ export function buildInvoiceHtml(payload) {
         `<tr><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(it.description)}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${escapeHtml(String(it.quantity))}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${escapeHtml(usd(it.unitPrice))}</td><td style="padding:8px;border:1px solid #ddd;text-align:right;">${escapeHtml(usd(it.total))}</td></tr>`
     )
     .join("\n");
+
+  // Third-party PII carried by a real freight invoice: the driver's mobile and
+  // email, the tractor VIN, and the payer's AP contact. These are what the
+  // Nutrient redaction pass destroys before the document goes for signature.
+  // Deliberately rendered here, far from the signature blocks below — a
+  // redaction box overlapping a Foxit Text Tag destroys the tag and the
+  // gateway then refuses the send ("Please assign a signature field").
+  const ship = invoice.shipment;
+  const shipmentSection = ship
+    ? `<h2 style="font-size:14px;margin:20px 0 8px 0;">Shipment contacts</h2>
+  <table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <tbody>
+      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Driver</strong></td><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(ship.driverName)} — ${escapeHtml(ship.driverPhone)} — ${escapeHtml(ship.driverEmail)}</td></tr>
+      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Tractor VIN</strong></td><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(ship.tractorVin)}</td></tr>
+      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>AP contact</strong></td><td style="padding:8px;border:1px solid #ddd;">${escapeHtml(ship.apContactName)} — ${escapeHtml(ship.apContactPhone)} — ${escapeHtml(ship.apContactEmail)}</td></tr>
+    </tbody>
+  </table>`
+    : "";
 
   // Foxit Text Tags — one required signature per party, indexed to their
   // sequence (party_number = i+1 matching esign-adapter parties.sequence).
@@ -111,12 +129,11 @@ export function buildInvoiceHtml(payload) {
     .map((r, i) => {
       const seq = i + 1;
       const name = escapeHtml(`${r.firstName} ${r.lastName}`);
-      const email = escapeHtml(r.email);
       // Short-form signfield tag: ${s:seq:y} or long-form ${signfield:seq:y:____}
       // Use long form for explicitness; width via trailing ____ placeholder.
       const tag = `\${signfield:${seq}:y:____}`;
       return `<div style="margin-top:24px;">
-        <div style="font-size:12px;color:#333;margin-bottom:6px;">${name} — ${email}</div>
+        <div style="font-size:12px;color:#333;margin-bottom:6px;">${name}</div>
         <div style="position:relative;width:320px;height:36px;border-bottom:1px solid #111;">
           <span style="position:absolute;left:0;top:8px;color:#fff;font-size:10px;white-space:nowrap;">${tag}</span>
         </div>
@@ -147,6 +164,7 @@ export function buildInvoiceHtml(payload) {
     <div><strong>Payer:</strong> ${escapeHtml(invoice.payer.name)}, ${escapeHtml(invoice.payer.location)}</div>
     <div><strong>Received:</strong> ${escapeHtml(invoice.receivedDate)}</div>
   </div>
+  ${shipmentSection}
   <h2 style="font-size:14px;margin:20px 0 8px 0;">Line Items</h2>
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
     <thead><tr><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Item</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:right;">Qty</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:right;">Unit price</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:right;">Total</th></tr></thead>
@@ -161,7 +179,7 @@ export function buildInvoiceHtml(payload) {
   </table>
   <h2 style="font-size:14px;margin:20px 0 8px 0;">Signers</h2>
   <table style="border-collapse:collapse;width:100%;font-size:13px;">
-    <thead><tr><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Name</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Email</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Role</th></tr></thead>
+    <thead><tr><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Name</th><th style="padding:8px;border:1px solid #ddd;background:#f6f6f6;text-align:left;">Role</th></tr></thead>
     <tbody>${recipientRows}</tbody>
   </table>
   ${signatureSection}
