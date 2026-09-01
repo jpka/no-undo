@@ -21,18 +21,22 @@ Targets: `email-address`, `north-american-phone-number`, and a VIN regex.
 `stageRedactions` draws redaction annotations over content that is still
 present. The adapter's docstring says so; this is the measurement.
 
-Text recovered via `/extraction/parse` from each artifact:
+Text recovered via `/extraction/parse` from each artifact. "PII surviving"
+counts, of the five values the fixture plants, how many are still recoverable:
 
-| Artifact | Bytes | Emails recoverable | Phones recoverable | Signature tags |
-| --- | --- | --- | --- | --- |
-| `probe-original.pdf` | 66,463 | 2 | 2 | present |
-| `probe-staged.pdf` | 74,777 | **2** | **2** | garbled |
-| `probe-applied.pdf` | 76,196 | 0 | 0 | present |
+| Artifact | Bytes | PII surviving | Signature tags |
+| --- | --- | --- | --- |
+| `probe-original.pdf` | 66,463 | 5 / 5 | 1, 2 |
+| `probe-staged.pdf` | 76,684 | **5 / 5** | none extractable |
+| `probe-applied.pdf` | 78,461 | **0 / 5** | 1, 2 |
 
-Both `m.webb@acmefreight-drivers.example` and
-`ap@kaniefsky-transport.example`, and both `(201) 555-0142` and
-`(718) 555-0197`, are extractable from the staged PDF with a single API call.
-The document renders with black boxes over them.
+Staging took 1,884 ms and removed nothing. Every planted value —
+`(201) 555-0142`, `m.webb@acmefreight-drivers.example`, `1FUJGLDR8CLBP8834`,
+`ap@kaniefsky-transport.example`, `(718) 555-0197` — is recoverable from the
+staged PDF with a single API call. The document renders with black boxes over
+them.
+
+Applying took 741 ms and removed all five, with both signature fields intact.
 
 This is why the pipeline never lets staged bytes reach the signer: an operator
 who eyeballs the staged PDF, sees the boxes, and forwards it has published every

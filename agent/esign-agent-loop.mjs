@@ -386,7 +386,10 @@ export async function runFromPrompt(prompt, options = {}) {
     signatureTagsVerified = expectedTagSeqs;
     redactionSummary = red.summary;
     console.error(`[agent] Nutrient redaction: ${red.summary}`);
-    console.error(`[agent] Redaction bytes: assembled ${assembledBytes.length} → staged ${red.stagedBytes} → applied ${red.appliedBytes}`);
+    // stagedBytes is null unless stageFirst was requested — the staging call is
+    // billed and its result is discarded, so the pipeline skips it by default.
+    const stagedLeg = red.stagedBytes === null ? "" : ` → staged ${red.stagedBytes}`;
+    console.error(`[agent] Redaction bytes: assembled ${assembledBytes.length}${stagedLeg} → applied ${red.appliedBytes}`);
   }
   return runAgentLoop({
     folderName: parsed.folderName,
