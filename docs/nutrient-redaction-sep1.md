@@ -8,6 +8,11 @@ Artifacts: `docs/fixtures/probe-original.pdf`, `probe-staged.pdf`,
 `probe-applied.pdf`. Every value in them is synthetic — `.example` domains and
 `555-01xx` numbers are reserved for documentation and cannot route to a person.
 
+**`probe-staged.pdf` is committed precisely because it is not redacted.** It
+renders black boxes and every value under them is recoverable with one API call.
+It is the evidence for Finding 1, not an accident — if you open it and extract a
+driver's email address, that is the point being made.
+
 Targets: `email-address`, `north-american-phone-number`, and a VIN regex.
 (`preset: "vin"` was the original third target and was dropped — see Finding 4.)
 

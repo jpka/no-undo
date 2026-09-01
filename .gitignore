@@ -16,3 +16,7 @@ test-docs/
 *-journal.jsonl
 *-audit.jsonl
 .tmp-*
+
+# Local agent/session state — not part of the project
+.agents/
+.claude/
