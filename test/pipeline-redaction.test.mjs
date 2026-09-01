@@ -87,7 +87,18 @@ function installMock({
     }
     if (u.includes("/build")) {
       buildCalls += 1;
-      const isStage = buildCalls === 1;
+      // Route on what the request ASKS FOR, not on call order. redactForSignature
+      // no longer always makes a staging call (it is billed and its result is
+      // locally derivable), so an order-based mock would hand the staged body to
+      // the apply call and the staged-vs-applied assertion would pass vacuously.
+      // An apply request is the one carrying the applyRedactions action.
+      let instructions = "";
+      try {
+        instructions = String((init.body && init.body.get && init.body.get("instructions")) ?? "");
+      } catch {
+        instructions = "";
+      }
+      const isStage = !instructions.includes("applyRedactions");
       if (isStage && failStage) {
         return {
           ok: false,
@@ -311,10 +322,11 @@ describe("redactForSignature", () => {
     assert.match(r.summary, /target set\(s\) applied/);
     assert.match(r.summary, /verified absent/);
     assert.match(r.summary, /verified intact/);
-    // Counts
-    assert.equal(typeof r.stagedBytes, "number");
+    // Counts. Staging is OFF by default: it is a separately billed /build call
+    // whose result is locally derivable, so the pipeline does not make it and
+    // stagedBytes is null. appliedBytes always reflects a real call.
+    assert.equal(r.stagedBytes, null);
     assert.equal(typeof r.appliedBytes, "number");
-    assert.equal(r.stagedBytes, STAGED_BYTES.length);
     assert.equal(r.appliedBytes, APPLIED_BYTES.length);
     assert.deepEqual(r.verified, { checked: mustBeAbsent.length, tags: expectedTagSeqs });
     assert.equal(r.staged.count, DEFAULT_TARGETS.length);
@@ -339,15 +351,44 @@ describe("redactForSignature", () => {
     assert.ok(!r.bytes.every((b, i) => STAGED_BYTES[i] === b && r.bytes.length === STAGED_BYTES.length), "returned bytes must NOT equal staged bytes");
     // Also via the explicit counters
     assert.equal(r.appliedBytes, APPLIED_BYTES.length);
-    assert.equal(r.stagedBytes, STAGED_BYTES.length);
-    assert.notEqual(r.appliedBytes, r.stagedBytes, "staged and applied lengths must differ to prove the right document was returned");
+    assert.notEqual(r.appliedBytes, STAGED_BYTES.length, "staged and applied lengths must differ to prove the right document was returned");
     assert.deepEqual(Buffer.from(r.bytes).toString(), Buffer.from(APPLIED_BYTES).toString());
   });
 
-  test("returns ok:false with stage:'stage' when staging fails", async () => {
-    installMock({ failStage: true });
+  test("the default path makes exactly one billed /build call", async () => {
+    // DWS bills roughly one credit per redaction action, so an unnecessary
+    // staging call doubled the cost of every run. The inventory it used to
+    // provide is computed locally. This test pins the saving: one /build call
+    // (the apply) plus one /extraction/parse (the verification).
+    let buildCalls = 0;
+    let parseCalls = 0;
+    installMock({ parseText: "clean signfield:1:y signfield:2:y" });
+    const mocked = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes("/build")) buildCalls += 1;
+      if (u.includes("/extraction/parse")) parseCalls += 1;
+      return mocked(url, init);
+    };
+    const r = await redactForSignature(DOC, { mustBeAbsent: [], expectedTagSeqs: [1, 2] });
+    assert.equal(r.ok, true);
+    assert.equal(buildCalls, 1, "exactly one billed /build call (the apply)");
+    assert.equal(parseCalls, 1, "one verification read-back");
 
-    const r = await redactForSignature(DOC, { mustBeAbsent: [], expectedTagSeqs: [1] });
+    // And with stageFirst it is two — the opt-in still works.
+    buildCalls = 0;
+    const r2 = await redactForSignature(DOC, { stageFirst: true, mustBeAbsent: [], expectedTagSeqs: [1, 2] });
+    assert.equal(r2.ok, true);
+    assert.equal(buildCalls, 2, "stageFirst adds the staging call back");
+    assert.equal(r2.stagedBytes, STAGED_BYTES.length);
+    // afterEach restores globalThis.fetch — no manual restore here, it raced.
+  });
+
+  test("returns ok:false with stage:'stage' when staging fails (stageFirst)", async () => {
+    installMock({ failStage: true });
+    // Staging only happens when explicitly requested — see the stageFirst option.
+
+    const r = await redactForSignature(DOC, { stageFirst: true, mustBeAbsent: [], expectedTagSeqs: [1] });
     assert.equal(r.ok, false);
     if (r.ok) throw new Error("unreachable");
     assert.equal(r.stage, "stage");

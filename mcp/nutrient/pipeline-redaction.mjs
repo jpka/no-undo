@@ -122,6 +122,10 @@ export function piiValuesOf(invoice) {
  * @param {import("./redaction-adapter.mjs").RedactionTarget[]} [options.targets]
  * @param {string[]} options.mustBeAbsent concrete values that must not survive
  * @param {number[]} options.expectedTagSeqs signature tag sequences that must survive
+ * @param {boolean} [options.stageFirst] also make the staging call (default false).
+ *   Costs a full extra billed /build operation and returns nothing this function
+ *   uses — see the note in the body. Kept for the standalone redaction MCP
+ *   server's stage-then-approve-then-apply lifecycle, which does use the bytes.
  * @returns {Promise<{ok: true, bytes: Uint8Array, summary: string, staged: {count: number, targets: string[]}, verified: {checked: number, tags: number[]}, stagedBytes: number, appliedBytes: number}
  *                  | {ok: false, error: string, stage: "stage"|"apply"|"verify"}>}
  */
@@ -129,12 +133,29 @@ export async function redactForSignature(docBytes, options) {
   const targets = options.targets ?? DEFAULT_TARGETS;
   const { mustBeAbsent, expectedTagSeqs } = options;
 
-  // 1. Stage. Reversible, and its only job here is the reviewable inventory of
-  //    what the detector matched. The staged BYTES are deliberately discarded:
-  //    they still contain every value (Finding 1) and must never reach a signer.
-  const staged = await stageRedactions(docBytes, targets, { fileName: "invoice.pdf" });
-  if (!staged.ok) {
-    return { ok: false, error: `stage failed: ${staged.error}`, stage: "stage" };
+  // 1. The reviewable inventory of what the detector was asked to remove.
+  //
+  //    This used to call stageRedactions() to get it. That call is billed — DWS
+  //    charges roughly one credit per redaction action, so a three-target run
+  //    spent three credits on it — and it returned nothing this function used:
+  //    `count` is just `targets.length`, `targets` is `targets.map(describeTarget)`
+  //    (a pure function), and the staged BYTES were deliberately discarded,
+  //    because they still contain every value (Finding 1) and must never reach a
+  //    signer. The inventory is computed locally instead, halving the cost of a
+  //    run with no loss of information on the approval card.
+  //
+  //    stageRedactions() is still the right call for the standalone redaction MCP
+  //    server, whose lifecycle is stage → human approves → apply: there the staged
+  //    bytes are the artifact the human reviews. Pass `stageFirst: true` to make
+  //    the call here too.
+  const inventory = { count: targets.length, targets: targets.map(describeTarget) };
+  let stagedBytes = null;
+  if (options.stageFirst) {
+    const staged = await stageRedactions(docBytes, targets, { fileName: "invoice.pdf" });
+    if (!staged.ok) {
+      return { ok: false, error: `stage failed: ${staged.error}`, stage: "stage" };
+    }
+    stagedBytes = staged.bytes.length;
   }
 
   // 2. Apply. Destroys content under every mark.
@@ -159,8 +180,8 @@ export async function redactForSignature(docBytes, options) {
 
   // Labelled "Nutrient redaction" on the approval card — no prefix here.
   const summary =
-    `${staged.staged.count} target set(s) applied ` +
-    `(${staged.staged.targets.join("; ")}) — ` +
+    `${inventory.count} target set(s) applied ` +
+    `(${inventory.targets.join("; ")}) — ` +
     `${mustBeAbsent.length} value(s) verified absent from the outgoing document, ` +
     `${expectedTagSeqs.length} signature field(s) verified intact`;
 
@@ -168,9 +189,9 @@ export async function redactForSignature(docBytes, options) {
     ok: true,
     bytes: applied.bytes,
     summary,
-    staged: staged.staged,
+    staged: inventory,
     verified: { checked: mustBeAbsent.length, tags: expectedTagSeqs },
-    stagedBytes: staged.bytes.length,
+    stagedBytes,
     appliedBytes: applied.bytes.length,
   };
 }

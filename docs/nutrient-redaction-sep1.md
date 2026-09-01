@@ -121,3 +121,25 @@ The guard therefore rejects every valid enriched PDF, which is why the
 `enriched-source` path had never been exercised end to end. It is replaced by a
 verification that reads the document rather than guessing from bytes — see
 `verifySignatureTags`.
+
+## Finding 6 — the staging call was half the cost and none of the value
+
+DWS bills roughly one credit per redaction action: a three-target
+`stageRedactions` call was refused with
+`operation failed because 3 required credits aren't available`.
+
+The pipeline made two billed `/build` calls per run, stage then apply, and used
+nothing from the first. `staged.count` is `targets.length`; `staged.targets` is
+`targets.map(describeTarget)`, a pure function of the arguments; and the staged
+*bytes* were deliberately discarded, because they still contain every value
+(Finding 1) and must never reach a signer. The approval card's inventory line is
+identical whether the call is made or not.
+
+So the pipeline now computes the inventory locally and makes one billed call —
+the apply — plus one `/extraction/parse` read-back for verification. A test pins
+the call count in both modes, because the saving is easy to undo by accident.
+
+`stageRedactions` remains the right call for the standalone redaction MCP
+server, whose lifecycle is stage → human approves → apply: there the staged
+bytes are the artifact the human reviews, and discarding them would defeat the
+purpose. `redactForSignature` takes `stageFirst: true` for callers that want it.
