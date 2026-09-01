@@ -325,7 +325,11 @@ export async function runFromPrompt(prompt, options = {}) {
   // existed, so `docBytes` was null on the demo prompt and every Nutrient call
   // was skipped with "no document bytes". Assembly now happens here, so both
   // extraction and redaction operate on a real document.
-  let pdfBytes = options.docBytes ?? null;
+  // The document that gets SIGNED is always the one this pipeline assembles and
+  // redacts. `options.docBytes` is the source document extraction READS (a scan,
+  // via --doc); it is not signable — it carries no Foxit Text Tags, so passing it
+  // through here produced a draft the gateway would refuse.
+  let pdfBytes = null;
   let signatureTagsVerified = null;
   let redactionSummary = null;
 
@@ -743,6 +747,14 @@ async function main() {
   const downloadSigned = args.includes("--download-signed") || pollForSigned;
   const pollTimeoutIdx = args.indexOf("--poll-timeout");
   const pollTimeoutMs = pollTimeoutIdx >= 0 ? Number(args[pollTimeoutIdx + 1]) : undefined;
+  // --doc <path> supplies the source document extraction reads. Without it,
+  // extraction reads the invoice this pipeline just assembled, which is a clean
+  // machine-rendered PDF — the routing has almost nothing to discriminate on and
+  // the card says so. The interesting case is a real scan. `--doc messy` uses the
+  // committed generator (skewed lines, OCR-hostile glyphs, no due date or PO
+  // number) so the run is reproducible without shipping a binary.
+  const docIdx = args.indexOf("--doc");
+  const docArg = docIdx >= 0 && args[docIdx + 1] && !args[docIdx + 1].startsWith("--") ? args[docIdx + 1] : null;
   const promptIdx = args.indexOf("--prompt");
   let prompt = promptIdx >= 0 ? args[promptIdx + 1] : null;
   if (prompt?.startsWith("--")) prompt = null;
@@ -757,13 +769,23 @@ async function main() {
   }
   const recipientOverrides = recipientFlags.map((f) => parseRecipientFlag(f));
 
+  let docBytes = null;
+  if (docArg === "messy") {
+    const { messyPdf } = await import("../mcp/nutrient/messy-pdf.mjs");
+    docBytes = new Uint8Array(Buffer.from(messyPdf(), "latin1"));
+    console.error(`[agent] Source document: generated messy invoice (${docBytes.length} bytes)`);
+  } else if (docArg) {
+    docBytes = new Uint8Array(readFileSync(resolvePath(docArg)));
+    console.error(`[agent] Source document: ${docArg} (${docBytes.length} bytes)`);
+  }
+
   let result;
   if (prompt) {
-    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, allowUntaggedEnrichedPdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides });
+    result = await runFromPrompt(prompt, { autoApprove, allowFixturePdf, allowUntaggedEnrichedPdf, pollForSigned, downloadSigned, pollTimeoutMs, recipients: recipientOverrides, docBytes });
   } else {
     // Skip flag values when looking for the folder name (e.g. --recipient
     // "Name <addr>" should not be treated as the folder name).
-    const flagArgs = new Set(["--prompt", "--recipient", "--poll-timeout"]);
+    const flagArgs = new Set(["--prompt", "--recipient", "--poll-timeout", "--doc"]);
     const folderName = args.find((a, i) => !a.startsWith("--") && !flagArgs.has(args[i - 1])) ?? "demo-contract";
     // Explicit --recipient overrides apply even without --prompt: use them
     // instead of the unresolved fallback recipients (which would be refused).
