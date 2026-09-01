@@ -53,11 +53,36 @@ describe("pdf-assembly — buildInvoiceHtml", () => {
       instructions: "redact PII",
     });
     assert.match(html, /Freight Invoice/);
-    assert.match(html, /alice@example\.com/);
     assert.match(html, /Alice Smith/);
+    // The signer's own address must NOT reach the document body. Foxit carries
+    // recipient addresses in `parties`; rendering it here created a redaction
+    // target sitting on top of a Foxit Text Tag, and applying the redaction
+    // destroyed the signature field (docs/nutrient-redaction-sep1.md, Finding 2).
+    assert.doesNotMatch(html, /alice@example\.com/);
     assert.match(html, /redact PII/);
     assert.match(html, /foxit/i);
     assert.doesNotMatch(html, /<script/);
+  });
+
+  test("renders the third-party PII the redaction pass targets", () => {
+    const html = buildInvoiceHtml({
+      folderName: "Freight Invoice",
+      recipients: [{ firstName: "Alice", lastName: "Smith", email: "alice@example.com" }],
+    });
+    // These are the redaction targets: driver contact, tractor VIN, AP contact.
+    // Without them the prompt's "redact the PII" has nothing to act on.
+    assert.match(html, /m\.webb@acmefreight-drivers\.example/);
+    assert.match(html, /\(201\) 555-0142/);
+    assert.match(html, /1FUJGLDR8CLBP8834/);
+    assert.match(html, /ap@kaniefsky-transport\.example/);
+    assert.match(html, /Shipment contacts/);
+    // The signature tag must exist and must not sit inside the PII block —
+    // a redaction box overlapping it destroys the field (Finding 2).
+    assert.match(html, /\$\{signfield:1:y:____\}/);
+    assert.ok(
+      html.indexOf("Shipment contacts") < html.indexOf("${signfield:1:y:____}"),
+      "shipment PII must be rendered before (and away from) the signature blocks",
+    );
   });
 
   test("escapes HTML injection", () => {
@@ -90,8 +115,11 @@ describe("pdf-assembly — buildInvoiceHtml", () => {
         { firstName: "B", lastName: "Two", email: "b@example.com" },
       ],
     });
-    assert.match(htmlMulti, /a@example\.com/);
-    assert.match(htmlMulti, /b@example\.com/);
+    assert.match(htmlMulti, /A One/);
+    assert.match(htmlMulti, /B Two/);
+    // Neither signer's address appears in the body — see Finding 2.
+    assert.doesNotMatch(htmlMulti, /a@example\.com/);
+    assert.doesNotMatch(htmlMulti, /b@example\.com/);
     const htmlEmpty = buildInvoiceHtml({ folderName: "Empty", recipients: [] });
     assert.match(htmlEmpty, /<tbody><\/tbody>/);
   });
