@@ -242,6 +242,7 @@ The terminal beats are captured, not reconstructed:
 set -a; source .env; set +a
 node scripts/demo.mjs reset          # clean chain before a full take
 scripts/record-demo.sh               # gate, vin, crash, audit
+.demo/tools/venv/bin/python scripts/make-cards.py   # title, beat1, close
 python3 scripts/demo-subtitles.py    # per-beat + combined SRT
 ```
 
@@ -268,9 +269,20 @@ Two things the beat list doesn't make obvious:
   re-run both.
 
 Segments that aren't terminal output get subtitles too — `cold-open.srt`,
-`beat1.srt` (the messy PDF), `gate-browser.srt` (the approval card) and
+`beat1.srt` (the document), `gate-browser.srt` (the approval card) and
 `close.srt`. These are generated against a zero start, so offset them to
 wherever they land in the edit.
+
+`make-cards.py` renders three of those four as video: `title.mp4` (11s),
+`beat1.mp4` (31s) and `close.mp4` (41s), styled to match the terminal takes so
+the cut doesn't jump. Beat 1 cuts from the messy source to the assembled
+shipment-contacts block, then to the redacted one exactly on "prove you removed
+it" — the assembled and redacted frames are the committed probe artifacts, the
+same bytes the README's evidence table is drawn from.
+
+**Only the approval card has to be captured by hand.** It's a live page on an
+ephemeral port: run `node scripts/demo.mjs gate`, read the port off stderr,
+open it, and record 3–4 seconds of the card.
 
 ### Length
 

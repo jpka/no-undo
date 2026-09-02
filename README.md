@@ -18,21 +18,29 @@ One prompt in, signed document out. A messy invoice is parsed, its fields routed
 
 Nobody else in this hackathon will demo a crash.
 
+Verbatim from the recorded demo — real folder IDs, against the live eSign API:
+
 ```
-$ node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
-[agent] Creating draft folder…
-[agent] Draft: folderId=fld_abc123 planToken=pln_…
-[agent] Auto-approved (no human interaction)
-[agent] beginExecute…
-# ← process dies here (NO_UNDO_CRASH_AFTER_FSYNC=1)
-# restart
-$ node agent/esign-agent-loop.mjs --auto-approve --prompt "Take this freight invoice…"
-[agent] Recovered 1 stuck-executing plan(s) (outcome unknown, reconciled on load):
-  - planToken=pln_… folderId=fld_abc123 → folderStatus=SHARED → confirmed executed
-[agent] Result: { "status": "executed" }
+$ NO_UNDO_CRASH_AFTER_FSYNC=1 node agent/esign-agent-loop.mjs --auto-approve --doc messy \
+    --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+[agent] Draft: folderId=35704250 planToken=7c61234a… documentSha256=491d5ef8070b98b3…
+[esign-audit] executing token=7c61234a... tool=esign_send
+[crash-injection] SIGKILL after beginExecute fsync (token=7c61234a...) before the gateway send
+
+# same command, no crash flag
+$ node agent/esign-agent-loop.mjs --auto-approve --doc messy --prompt "Take this freight invoice…"
+[agent] Recovered 1 stuck-executing plan(s) (reconciled on load):
+  - planToken=7c61234a... folderId=35704250 → folderStatus=DRAFT → confirmed not executed → released for retry
+[agent] Plan is executing — calling gateway sendDraftFolder…
+[agent] Send succeeded — plan executed (verified SHARED)
+[agent] Result: { "status": "executed", "verifiedStatus": "SHARED", "folderId": 35704276 }
 ```
 
-The send happened exactly once. The audit log is honest about what happened. That is the demo.
+The crash landed on the DRAFT side of the window: the gateway had never been
+called, so the plan was released and retried. Had it landed on the other side,
+the same query returns SHARED and recovery records the send instead of
+repeating it. The branch is chosen by the system of record, not by a guess —
+and either way the document goes out exactly once.
 
 ---
 
@@ -70,14 +78,14 @@ Everything above step 5 is reversible and runs unattended. What reaches the gate
   Nutrient extraction: 2/16 fields auto-approved — 14 need human review —
                        11 caught by OCR recognition floor: vendor_name,
                        payer_name, line_items[0].description, … —
-                       1 ungrounded (not_found): po_number —
+                       2 ungrounded (not_found): due_date, po_number —
                        thresholds calibrated: false
 
   Nutrient redaction:  3 target set(s) applied (preset: email-address;
                        preset: north-american-phone-number; regex (19 chars,
                        character classes only) — pattern withheld from this
                        view) — 5 value(s) verified absent from the outgoing
-                       document, 2 signature field(s) verified intact
+                       document, 1 signature field(s) verified intact
 
   ⚠️ Irreversible:     Approving sends this document to the listed recipients
                        for signature. This action cannot be undone.
@@ -294,6 +302,12 @@ docs/fixtures/                 — committed API responses + redaction artifacts
 - **Thresholds are uncalibrated.** Every entry in `THRESHOLDS` is marked `calibrated: false`, and a test asserts none of them claims otherwise. Calibrating them needs a representative sample per document type, not one invoice. Until then the defaults are deliberately strict (over-refer rather than under-refer).
 - **Approval-server authentication** is upstream in `safe-write-mcp-core` (tracked as [#20](https://github.com/jpka/safe-write-mcp-core/issues/20)): the server binds loopback and checks `Host`/`Origin`/`Sec-Fetch-Site`, but carries no shared secret. The threat model the header checks cover is a malicious browser page, not a hostile local process.
 - **Redaction targets are a fixed list, not a detector.** `DEFAULT_TARGETS` covers email, North American phone, and a VIN regex, because those are what this invoice carries and what was probed to actually match. A document with a passport number or an IBAN would pass through untouched, and the verification step would report success — it confirms the values it was *told* to remove are gone, not that the document is free of PII. Deciding what to redact is still a human's job here.
+- **The outgoing document carries a trial watermark.** The Nutrient DWS free
+  trial stamps *"For Evaluation Purposes Only"* across every document `/build`
+  returns, so it is on the redacted PDF that reaches the gate and the recipient.
+  It is a licensing artifact, not a pipeline behaviour — the redactions, the
+  signature fields and the verification read-back are unaffected — but it is on
+  the deliverable, and `docs/fixtures/probe-applied.pdf` shows exactly how.
 - **Verification reads the document once.** It confirms the target values are absent from `/extraction/parse` output. A value rendered as an image, or split across text runs in a way the parser rejoins differently, could evade both the redactor and the check.
 
 ---
