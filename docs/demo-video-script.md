@@ -25,7 +25,7 @@ node scripts/demo.mjs audit     # Beat 5 — the audit trail
 
 | # | Prerequisite | Status |
 |---|---|---|
-| P0 | **`jpka/no-undo` is public.** Confirm with `gh repo view jpka/no-undo --json isPrivate` → `false`. | ☐ **blocking the final card** |
+| P0 | **`jpka/no-undo` is public.** Confirm with `gh repo view jpka/no-undo --json isPrivate` → `false`. | ✅ verified public Sep 2 |
 | P1 | Agent loop drives the full lifecycle. | ✅ |
 | P2 | Hash-chained, fsync'd JSONL audit sink. | ✅ |
 | P3 | Deterministic crash injection (`NO_UNDO_CRASH_AFTER_FSYNC`). | ✅ |
@@ -92,7 +92,7 @@ only signal that measures whether the glyphs were actually read, as opposed to
 whether the model feels confident about what it guessed."
 
 **VO over the redaction line:** "Three redaction target sets applied. Then five
-values verified absent from the outgoing document, and both signature fields
+values verified absent from the outgoing document, and the signature field
 verified intact. Verified, not assumed. That distinction is the next beat."
 
 **Visual:** Open the approval URL. Let the card sit on screen 3–4 seconds.
@@ -210,13 +210,15 @@ github.com/jpka/no-undo
 ## Production notes
 
 - **Screen recording:** OBS, 1080p, terminal + browser side by side.
-- **Terminal:** JetBrains Mono or Fira Code, 14pt, dark theme. Wide enough that
-  the extraction line doesn't wrap — it's long, and wrapping makes it unreadable.
+- **Terminal:** JetBrains Mono, dark theme (`scripts/record-demo.sh` uses 110×36,
+  20px, dracula). The extraction line wraps at any width that still fits 1080p —
+  it runs past 450 characters — so it wraps to five lines and that is expected.
+  It prints twice, once as `[pipeline]` and once as `[agent]`; don't linger.
 - **Browser:** clean profile, no bookmarks bar. Read the approval port off stderr.
 - **`node scripts/demo.mjs reset` between takes.** A leftover `executing` plan
   makes the loop refuse to start new work — correct behaviour, wrong moment.
-- **Capture terminal output for real** (`asciinema` or `script`) rather than
-  retyping it.
+- **Capture terminal output for real.** `scripts/record-demo.sh` does it —
+  asciinema over the real pty, rendered to 1080p h264. See "Recording" below.
 - **Audio:** quiet room, no music under voiceover.
 - **Pacing:** let the approval card and the VIN table sit 3–4 seconds each. The
   viewer has to actually read them.
@@ -229,3 +231,64 @@ github.com/jpka/no-undo
   `DEMO_RECIPIENT="Your Name <you@yourdomain.com>" node scripts/demo.mjs crash`
 - **Before uploading:** confirm `gh repo view jpka/no-undo --json isPrivate`
   returns `false`.
+
+---
+
+## Recording
+
+The terminal beats are captured, not reconstructed:
+
+```bash
+set -a; source .env; set +a
+node scripts/demo.mjs reset          # clean chain before a full take
+scripts/record-demo.sh               # gate, vin, crash, audit
+python3 scripts/demo-subtitles.py    # per-beat + combined SRT
+```
+
+`record-demo.sh` installs its own tools into `.demo/tools` (asciinema, agg,
+JetBrains Mono) and writes `.demo/recordings/{beat}.{cast,gif,mp4}` at 1080p30,
+plus `reel.mp4` — the four beats stitched in order. Output lands in `.demo/`,
+which is gitignored — journals carry payloads.
+
+Subtitles stay in sidecar `.srt` files and are never burned in, so a VO line can
+be re-cut without re-rendering video.
+
+Two things the beat list doesn't make obvious:
+
+- **`audit` must be recorded last.** It reads the chain `gate` and `crash`
+  write, and `demo.mjs reset` deletes that chain. Recorded on its own after a
+  reset it prints one record, or none.
+- **A beat's voiceover routinely outlasts its output.** `vin` prints its table
+  in two seconds and then gets narrated for half a minute. `record-demo.sh`
+  holds the final frame per beat (`hold_for`) so the VO doesn't run off the
+  end; `demo-subtitles.py` anchors each cue to the frame where its subject
+  appears and reports where the narration ends. If you rewrite a VO line,
+  re-run both.
+
+Segments that aren't terminal output get subtitles too — `cold-open.srt`,
+`beat1.srt` (the messy PDF), `gate-browser.srt` (the approval card) and
+`close.srt`. These are generated against a zero start, so offset them to
+wherever they land in the edit.
+
+### Length
+
+Measured, at 156 words per minute:
+
+| Segment | Footage | Voiceover |
+|---|---|---|
+| Cold open + Beat 1 | shot separately | 0:40 |
+| Beat 2 — gate | 0:54 | 0:52 |
+| Beat 2b — approval card | shot separately | 0:23 |
+| Beat 3 — vin | 0:57 | 0:56 |
+| Beat 4 — crash | 1:16 | 1:15 |
+| Beat 5 — audit | 0:13 | 0:12 |
+| Close | shot separately | 0:39 |
+| **Terminal reel** | **3:21** | |
+
+Each beat's footage outlasts its own narration, so nothing runs off the end.
+But the whole thing — reel plus the four separately-shot segments — comes to
+roughly **4:40, over the rules cap of 4:00**. The cut order in the beats above
+still applies: drop Beat 5 first (−0:13), then Beat 3 (−0:57), which lands it
+at about 3:30. Re-run `demo-subtitles.py` after any VO edit; it reports where
+each beat's narration ends, and `record-demo.sh`'s `hold_for` is sized to those
+numbers.
