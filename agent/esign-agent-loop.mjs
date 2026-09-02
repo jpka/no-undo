@@ -47,6 +47,37 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // --- Custom renderPlan hook -------------------------------------------------
 
 /**
+ * Break an em-dash-joined summary into one clause per line.
+ *
+ * The extraction and redaction summaries are built as single strings so they
+ * can go in a log line, and on the card that arrives as an unreadable run-on.
+ * `pre` in the approval page is already `white-space: pre-wrap`, so newlines
+ * render with no CSS at all. Splits only at top level — the redaction summary
+ * carries an em dash inside its parenthetical ("— pattern withheld from this
+ * view"), and breaking there would split the clause from its own caveat.
+ *
+ * @param {string} summary
+ * @returns {string}
+ */
+function asLines(summary) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < summary.length; i++) {
+    const ch = summary[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && summary.startsWith(" — ", i)) {
+      parts.push(summary.slice(start, i));
+      i += 2;
+      start = i + 1;
+    }
+  }
+  parts.push(summary.slice(start));
+  return parts.map((p) => p.trim()).filter(Boolean).join("\n");
+}
+
+/**
  * Render an eSign plan for the approval UI.
  * Shows the prompt excerpt, parsed folder name, recipient list, and an
  * explicit irrevocability warning. Does NOT dump the raw payload JSON.
@@ -70,44 +101,58 @@ function renderEsignPlan(plan) {
     })
     .join("\n");
 
+  // Ordered by what a reviewer needs to decide, not by what is easy to emit.
+  // Blast radius first (who this reaches), then the evidence, then what the
+  // pipeline is unsure about, then the warning. The quiet provenance rows sit
+  // below that — they explain how we got here, they don't change the decision.
   const details = [];
-  if (promptExcerpt) {
-    details.push({ label: "Prompt", value: promptExcerpt });
-  }
-  details.push({ label: "Folder", value: folderName });
-  details.push({ label: "Folder ID", value: String(folderId) });
   details.push({ label: "Recipients", value: recipientRows || "(none)" });
-  if (promptDocSource) {
-    details.push({ label: "Document source", value: promptDocSource });
-  }
-  if (promptInstructions) {
-    details.push({ label: "Instructions", value: promptInstructions });
-  }
-  // Foxit-assembled document digest (build-plan step 3: pdf_from_html bytes → SHA-256)
+  details.push({ label: "Folder", value: folderName });
+
+  // Foxit-assembled document digest (build-plan step 3: pdf_from_html bytes → SHA-256).
+  // Printed in full and deliberately: a reviewer's use for this is to compare it
+  // against an external record, which a truncated digest cannot support. It is
+  // not meant to be read, and the card's ordering treats it accordingly.
   const documentSha256 = plan.extra?.documentSha256;
   if (documentSha256) {
     const via = plan.extra?.documentVia ? ` (via ${plan.extra.documentVia})` : "";
     details.push({ label: "Document SHA-256", value: `${documentSha256}${via}` });
   }
-  // Optional Nutrient enrichment summary (P6 pipeline: extraction → redaction before gate)
-  const nutrientSummary = plan.extra?.nutrientSummary;
-  if (nutrientSummary) {
-    details.push({ label: "Nutrient extraction", value: nutrientSummary });
-  }
+
   // What was removed from the document, and the confirmation that it is gone.
   // The reviewer needs both: the detector's inventory says what was looked for,
   // the verification says what is actually absent from the bytes being sent.
   const redactionSummary = plan.extra?.redactionSummary;
   if (redactionSummary) {
-    details.push({ label: "Nutrient redaction", value: redactionSummary });
+    details.push({ label: "Nutrient redaction", value: asLines(redactionSummary) });
   }
-  details.push({ label: "Agent's reason", value: plan.reason || "(none given)" });
+
+  // Optional Nutrient enrichment summary (P6 pipeline: extraction → redaction before gate)
+  const nutrientSummary = plan.extra?.nutrientSummary;
+  if (nutrientSummary) {
+    details.push({ label: "Nutrient extraction", value: asLines(nutrientSummary) });
+  }
+
   details.push({
     label: "⚠️ Irreversible",
     value:
       "Approving sends this document to the listed recipients for signature. " +
       "This action cannot be undone. Emails will be sent immediately.",
   });
+
+  // Provenance — how the plan was arrived at. Kept, but after the decision.
+  if (promptExcerpt) {
+    details.push({ label: "Prompt", value: promptExcerpt });
+  }
+  if (promptDocSource) {
+    details.push({ label: "Document source", value: promptDocSource });
+  }
+  if (promptInstructions) {
+    details.push({ label: "Instructions", value: promptInstructions });
+  }
+  details.push({ label: "Folder ID", value: String(folderId) });
+  // No "Agent's reason" row here — the approval server already renders
+  // plan.reason as "Reason given by agent". Pushing it again printed it twice.
 
   return {
     title: `✍️  Sign: ${folderName}`,

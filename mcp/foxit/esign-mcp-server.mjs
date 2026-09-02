@@ -95,7 +95,6 @@ function renderEsignPlan(plan) {
       { label: "Folder", value: folderName },
       { label: "Folder ID", value: String(folderId) },
       { label: "Recipients", value: recipientRows || "(none)" },
-      { label: "Agent's reason", value: plan.reason || "(none given)" },
       {
         label: "⚠️ Irreversible",
         value:
