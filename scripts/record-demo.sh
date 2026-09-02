@@ -82,10 +82,15 @@ write_wrapper() {
       # `gate` parks at the approval gate for the full approvalTimeoutMs
       # (5 min) with nothing on screen. Cut a few seconds after it gets there.
       cat <<'INNER'
+# Count first. A presence test passes instantly on any take not preceded by
+# `demo.mjs reset`, because the previous take left its own awaiting_approval
+# in the chain — the recording then cuts four seconds in, showing nothing.
+before=$(grep -c awaiting_approval .demo/esign-audit.jsonl 2>/dev/null || echo 0)
 node scripts/demo.mjs gate &
 demo=$!
 for _ in $(seq 1 300); do
-  grep -q awaiting_approval .demo/esign-audit.jsonl 2>/dev/null && break
+  now=$(grep -c awaiting_approval .demo/esign-audit.jsonl 2>/dev/null || echo 0)
+  [ "$now" -gt "$before" ] && break
   kill -0 "$demo" 2>/dev/null || break
   sleep 1
 done

@@ -255,9 +255,11 @@ be re-cut without re-rendering video.
 
 Two things the beat list doesn't make obvious:
 
-- **`audit` must be recorded last.** It reads the chain `gate` and `crash`
-  write, and `demo.mjs reset` deletes that chain. Recorded on its own after a
-  reset it prints one record, or none.
+- **`demo.mjs reset` must precede a full take, and `audit` must be recorded
+  last.** `audit` reads the chain `gate` and `crash` write, and `reset` deletes
+  that chain — recorded on its own after a reset it prints one record, or none.
+  The `gate` beat cuts its recording when a *new* `awaiting_approval` lands, so
+  it is correct on a dirty chain too, but the beat order still matters.
 - **A beat's voiceover routinely outlasts its output.** `vin` prints its table
   in two seconds and then gets narrated for half a minute. `record-demo.sh`
   holds the final frame per beat (`hold_for`) so the VO doesn't run off the
@@ -284,11 +286,13 @@ Measured, at 156 words per minute:
 | Beat 5 — audit | 0:13 | 0:12 |
 | Close | shot separately | 0:39 |
 | **Terminal reel** | **3:21** | |
+| **Everything, assembled** | **5:03** | |
 
 Each beat's footage outlasts its own narration, so nothing runs off the end.
-But the whole thing — reel plus the four separately-shot segments — comes to
-roughly **4:40, over the rules cap of 4:00**. The cut order in the beats above
-still applies: drop Beat 5 first (−0:13), then Beat 3 (−0:57), which lands it
-at about 3:30. Re-run `demo-subtitles.py` after any VO edit; it reports where
-each beat's narration ends, and `record-demo.sh`'s `hold_for` is sized to those
-numbers.
+But the whole thing — the 3:21 reel plus the separately-shot cold open, Beat 1,
+approval card and close — comes to **5:03, over the rules cap of 4:00**. The
+cut order in the beats above still applies: drop Beat 5 first (−0:13), then
+Beat 3 (−0:57), landing at **3:52**. That clears the cap by eight seconds, so
+the close card can't run long. Re-run `demo-subtitles.py` after any VO edit; it
+reports where each beat's narration ends, and `record-demo.sh`'s `hold_for` is
+sized to those numbers.
