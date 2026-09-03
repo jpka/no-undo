@@ -2,16 +2,18 @@
  * Tests for the Nutrient extraction routing adapter.
  *
  * Replays the committed live fixtures in docs/fixtures/ — does NOT call the
- * live API. The fixtures were captured Aug 20 by
- * `node mcp/nutrient/extract-probe.mjs --calibrate --fixture` and each one is a
- * real /extraction/extract response for the same generated messy invoice in
- * structure, understand, and agentic mode.
+ * live API. The fixtures are real /extraction/extract responses for the same
+ * generated messy invoice in structure, understand, and agentic mode, captured
+ * by `node mcp/nutrient/extract-probe.mjs [--calibrate] --fixture` across three
+ * live snapshots: Aug 20, Aug 29, and Sep 3, 2026 (docs/nutrient-stage-aug20.md,
+ * docs/nutrient-calibration-sep3.md).
  *
- * The most important test in this file is the last one: for every mode, no
- * field whose extracted value disagrees with the document may be auto-approved.
- * That property is the gate. The hand-written unit tests above it exist to pin
- * the individual rules the property depends on, so a regression names the rule
- * it broke instead of just failing the property.
+ * The most important test in this file is the safety-property one: for every
+ * mode, and every committed fixture for that mode (not just the newest — see
+ * finding D), no field whose extracted value disagrees with the document may
+ * be auto-approved. That property is the gate. The hand-written unit tests
+ * above it exist to pin the individual rules the property depends on, so a
+ * regression names the rule it broke instead of just failing the property.
  */
 
 import { test, describe } from "node:test";
@@ -35,17 +37,26 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(__dirname, "..", "docs", "fixtures");
 
 /**
- * Load the newest committed extract fixture for a mode.
+ * Load every committed extract fixture for a mode, oldest first.
+ *
+ * Not just the newest: a threshold that only has to survive the latest
+ * snapshot can quietly regress against an earlier one. Finding D
+ * (docs/nutrient-calibration-sep3.md) is exactly that — the Sep 3 sample
+ * auto-approved two wrong dollar amounts that the Aug 20/29 samples of the
+ * same document correctly caught. Checking every committed fixture is what
+ * would have caught that the moment the Sep 3 fixture was committed.
  * @param {string} mode
- * @returns {{output: {data: any, metadata: any}}}
+ * @returns {Array<{name: string, output: {data: any, metadata: any}}>}
  */
-function fixture(mode) {
-  const name = readdirSync(FIXTURES)
+function fixturesForMode(mode) {
+  const names = readdirSync(FIXTURES)
     .filter((f) => f.startsWith(`nutrient-extract-${mode}-`) && f.endsWith(".json"))
-    .sort()
-    .pop();
-  assert.ok(name, `no committed fixture for mode "${mode}"`);
-  return JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
+    .sort();
+  assert.ok(names.length > 0, `no committed fixture for mode "${mode}"`);
+  return names.map((name) => ({
+    name,
+    ...JSON.parse(readFileSync(join(FIXTURES, name), "utf8")),
+  }));
 }
 
 /**
@@ -170,7 +181,7 @@ describe("routeField: component vetoes", () => {
     // 0.678 was the only signal that knew.
     const r = routeOne(passingCitation({ recognitionScore: 0.678 }), 26.86);
     assert.equal(r.route, "human");
-    assert.match(r.reason, /recognitionScore 0\.678 below 0\.8/);
+    assert.match(r.reason, /recognitionScore 0\.678 below 0\.9/);
   });
 
   test("absent recognitionScore routes to the human when the type requires it", () => {
@@ -328,84 +339,96 @@ describe("schema and thresholds", () => {
 
 describe("committed live fixtures", () => {
   for (const mode of ["structure", "understand", "agentic"]) {
-    test(`${mode}: no wrong value is ever auto-approved`, () => {
-      const { output } = fixture(mode);
-      const routed = routeFields(output.data ?? {}, output.metadata ?? {}, {
-        documentType: "invoice",
+    for (const { name, output } of fixturesForMode(mode)) {
+      test(`${mode} (${name}): no wrong value is ever auto-approved`, () => {
+        const routed = routeFields(output.data ?? {}, output.metadata ?? {}, {
+          documentType: "invoice",
+        });
+
+        const escaped = routed.fields
+          .filter((f) => f.route === "auto" && f.field in GROUND_TRUTH)
+          .filter((f) => {
+            const expected = GROUND_TRUTH[f.field];
+            return typeof expected === "number"
+              ? Math.abs(expected - Number(f.value)) > 1e-9
+              : expected !== f.value;
+          })
+          .map((f) => `${f.field}: got ${JSON.stringify(f.value)}, document says ${JSON.stringify(GROUND_TRUTH[f.field])}`);
+
+        assert.deepEqual(
+          escaped,
+          [],
+          `${mode} (${name}) auto-approved ${escaped.length} field(s) that disagree with the document`,
+        );
       });
+    }
+  }
 
-      const escaped = routed.fields
-        .filter((f) => f.route === "auto" && f.field in GROUND_TRUTH)
-        .filter((f) => {
-          const expected = GROUND_TRUTH[f.field];
-          return typeof expected === "number"
-            ? Math.abs(expected - Number(f.value)) > 1e-9
-            : expected !== f.value;
-        })
-        .map((f) => `${f.field}: got ${JSON.stringify(f.value)}, document says ${JSON.stringify(GROUND_TRUTH[f.field])}`);
-
-      assert.deepEqual(
-        escaped,
-        [],
-        `${mode} auto-approved ${escaped.length} field(s) that disagree with the document`,
-      );
+  for (const { name, output } of fixturesForMode("understand")) {
+    test(`understand (${name}): the two wrong totals never auto-approve`, () => {
+      // The regression guard on findings B and D. Which signal catches them
+      // is not pinned to a fixed value: Aug 20/29 caught both on the OCR
+      // veto (recognitionScore ~0.57-0.68, well under the 0.9 floor); Sep 3
+      // scored the same two wrong fields 0.834/0.842 — high enough that the
+      // *old* 0.8 floor missed both. What must hold, on every snapshot, is
+      // the outcome: route stays "human" and the reason names why.
+      const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
+      for (const field of ["total_amount", "tax_amount"]) {
+        const f = routed.fields.find((x) => x.field === field);
+        assert.equal(f.route, "human", `${field} must not auto-approve (${name})`);
+        assert.match(
+          f.reason,
+          /recognitionScore/,
+          `${field} must be caught by the OCR veto, not some other rule (${name})`,
+        );
+        // Every other signal cleared it in every snapshot so far, which is the point.
+        assert.equal(f.match, "id_match");
+        assert.ok(f.confidence > 0.9);
+      }
     });
   }
 
-  test("understand mode's two wrong totals are caught by the OCR veto", () => {
-    // The regression guard on finding B, pinned to the real response: if the
-    // recognition floor is ever removed or lowered past 0.678, these two wrong
-    // numbers auto-approve and this test says so.
-    const { output } = fixture("understand");
-    const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
-    for (const field of ["total_amount", "tax_amount"]) {
-      const f = routed.fields.find((x) => x.field === field);
-      assert.equal(f.route, "human", `${field} must not auto-approve`);
-      assert.match(f.reason, /recognitionScore/, `${field} must be caught by the OCR veto`);
-      // Every other signal cleared it, which is the point.
-      assert.equal(f.match, "id_match");
-      assert.ok(f.confidence > 0.9);
-    }
-  });
-
-  test("agentic mode reports no OCR score at all, and is held for it", () => {
-    // The regression guard on finding C. Agentic was the most accurate mode on
-    // the totals and the least inspectable overall.
-    const { output } = fixture("agentic");
-    const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
-    const summary = summarizeRouting(routed);
-    assert.equal(
-      summary.recognition.absent,
-      summary.total,
-      "agentic is expected to omit recognitionScore on every field",
-    );
-    assert.equal(summary.auto, 0, "with no OCR signal, no invoice field may auto-approve");
-  });
-
-  test("understand and agentic both surface the two not_found fields", () => {
-    // Named for the two modes it actually checks. structure mode is excluded on
-    // purpose: it produced no citation for either field, so there is nothing to
-    // assert about its not_found handling — which is itself the finding that
-    // structure is unsuitable for schema extraction.
-    for (const mode of ["understand", "agentic"]) {
-      const { output } = fixture(mode);
+  for (const { name, output } of fixturesForMode("agentic")) {
+    test(`agentic (${name}): reports no OCR score at all, and is held for it`, () => {
+      // The regression guard on finding C. Agentic was the most accurate mode
+      // on the totals and the least inspectable overall.
       const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
-      for (const field of ["due_date", "po_number"]) {
-        const f = routed.fields.find((x) => x.field === field);
-        assert.ok(f, `${mode}: ${field} must appear in the walk despite being absent from data`);
-        assert.equal(f.match, "not_found");
-        assert.equal(f.route, "human");
-      }
-    }
-  });
+      const summary = summarizeRouting(routed);
+      assert.equal(
+        summary.recognition.absent,
+        summary.total,
+        `agentic is expected to omit recognitionScore on every field (${name})`,
+      );
+      assert.equal(summary.auto, 0, `with no OCR signal, no invoice field may auto-approve (${name})`);
+    });
+  }
 
-  test("structure mode refers everything, including fields it never scored", () => {
-    // The safe failure: a mode that produces little usable signal must not
-    // produce many auto-approvals.
-    const { output } = fixture("structure");
-    const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
-    const summary = summarizeRouting(routed);
-    assert.equal(summary.auto, 0, "structure mode must not auto-approve on this document");
-    assert.ok(summary.total > 0, "the walk still finds fields to report");
-  });
+  // Named for the two modes it actually checks. structure mode is excluded on
+  // purpose: it produced no citation for either field, so there is nothing to
+  // assert about its not_found handling — which is itself the finding that
+  // structure is unsuitable for schema extraction.
+  for (const mode of ["understand", "agentic"]) {
+    for (const { name, output } of fixturesForMode(mode)) {
+      test(`${mode} (${name}): surfaces the two not_found fields`, () => {
+        const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
+        for (const field of ["due_date", "po_number"]) {
+          const f = routed.fields.find((x) => x.field === field);
+          assert.ok(f, `${mode} (${name}): ${field} must appear in the walk despite being absent from data`);
+          assert.equal(f.match, "not_found");
+          assert.equal(f.route, "human");
+        }
+      });
+    }
+  }
+
+  for (const { name, output } of fixturesForMode("structure")) {
+    test(`structure (${name}): refers everything, including fields it never scored`, () => {
+      // The safe failure: a mode that produces little usable signal must not
+      // produce many auto-approvals.
+      const routed = routeFields(output.data, output.metadata, { documentType: "invoice" });
+      const summary = summarizeRouting(routed);
+      assert.equal(summary.auto, 0, `structure mode must not auto-approve on this document (${name})`);
+      assert.ok(summary.total > 0, "the walk still finds fields to report");
+    });
+  }
 });

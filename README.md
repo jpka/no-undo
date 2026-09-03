@@ -75,9 +75,9 @@ Everything above step 5 is reversible and runs unattended. What reaches the gate
                        2. Bob Jones <bob@example.com>
   Document SHA-256:    f3589f35e3de7c36… (via enriched-source)
 
-  Nutrient extraction: 2/16 fields auto-approved — 14 need human review —
-                       11 caught by OCR recognition floor: vendor_name,
-                       payer_name, line_items[0].description, … —
+  Nutrient extraction: 0/16 fields auto-approved — 16 need human review —
+                       13 caught by OCR recognition floor: vendor_name,
+                       payer_name, total_amount, tax_amount, … —
                        2 ungrounded (not_found): due_date, po_number —
                        thresholds calibrated: false
 
@@ -161,9 +161,9 @@ node agent/esign-agent-loop.mjs \
 | Extraction reads | Auto-approved | Caught by the OCR recognition floor |
 | --- | --- | --- |
 | the assembled invoice (clean render) | 0 / 16 | 0 |
-| `--doc messy` (a bad scan) | 2 / 16 | 11, named on the card |
+| `--doc messy` (a bad scan) | 0 / 16 | 13, named on the card |
 
-The recognition floor only earns its place on a document that was actually scanned badly. The card names which document extraction ran on, because those two rows say very different things about how much judgement was exercised.
+The recognition floor only earns its place on a document that was actually scanned badly. The card names which document extraction ran on, because those two rows say very different things about how much judgement was exercised. `--doc messy` currently auto-approves nothing at all — the floor was raised Sep 3 after a live re-run auto-approved two wrong dollar amounts the same floor had caught two weeks earlier (`docs/nutrient-calibration-sep3.md`); a fixed recognition floor on this document has not yet found a value high enough to both catch every wrong read seen so far and still clear any correct one.
 
 The document that gets **signed** is always the assembled, redacted one — `--doc` is an extraction input and is never signed.
 
