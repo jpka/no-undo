@@ -103,6 +103,8 @@ fsync'd JSONL trail. Editing one record invalidates every record after it.
 ## Known gaps we volunteer
 
 Thresholds are uncalibrated. Redaction targets are a fixed list, not a
-detector. The approval server has no shared secret yet. The Nutrient trial
-watermarks the outgoing document. All four are in the README, because a gate
-that hides its own uncertainty is decoration.
+detector. The Nutrient trial watermarks the outgoing document. All three are
+in the README, because a gate that hides its own uncertainty is decoration.
+(A fourth — the approval server had no shared secret — was closed before
+submission: `safe-write-mcp-core` 0.4.0 adds a per-session bearer token on
+every route, and this repo now consumes it.)

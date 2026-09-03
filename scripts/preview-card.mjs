@@ -62,5 +62,6 @@ const handle = await start(store, {
   renderPlan: renderEsignPlan,
 });
 
-console.log(`\n  ${plain ? "core styling" : "project styling"}: http://${handle.host}:${handle.port}\n`);
+const url = `http://${handle.host}:${handle.port}/` + (handle.token ? `?token=${handle.token}` : "");
+console.log(`\n  ${plain ? "core styling" : "project styling"}: ${url}\n`);
 console.log("  Nothing here sends anything. Ctrl-C to stop.\n");

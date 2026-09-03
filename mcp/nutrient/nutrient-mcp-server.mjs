@@ -910,7 +910,8 @@ async function main() {
     title: "Redaction Approval Queue",
   });
   console.error(
-    `[nutrient-mcp-server] approval server listening on http://${approval.host}:${approval.port}`,
+    `[nutrient-mcp-server] approval server listening on http://${approval.host}:${approval.port}/` +
+      (approval.token ? `?token=${approval.token}` : ""),
   );
 
   await server.connect(new StdioServerTransport());

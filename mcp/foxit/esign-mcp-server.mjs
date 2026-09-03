@@ -404,7 +404,8 @@ async function main() {
     title: "eSign Approval Queue",
   });
   console.error(
-    `[esign-mcp-server] approval server listening on http://${approvalHandle.host}:${approvalHandle.port}`,
+    `[esign-mcp-server] approval server listening on http://${approvalHandle.host}:${approvalHandle.port}/` +
+      (approvalHandle.token ? `?token=${approvalHandle.token}` : ""),
   );
 
   const transport = new StdioServerTransport();
