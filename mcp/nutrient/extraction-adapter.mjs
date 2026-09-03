@@ -43,7 +43,8 @@
  *    present and below the grounding floor, the field goes to the human even
  *    though the composite passed.
  *
- * TWO THINGS THE LIVE API TAUGHT US (Aug 20, docs/nutrient-extract-aug20.md)
+ * WHAT THE LIVE API TAUGHT US (docs/nutrient-stage-aug20.md,
+ * docs/nutrient-calibration-sep3.md)
  * -------------------------------------------------------------------------
  * A. **`not_found` fields are absent from `output.data` but present in
  *    `output.metadata`.** A field the API could not ground is simply omitted
@@ -88,6 +89,22 @@
  *    for a high-stakes field it must not be read as a pass. Raising accuracy is
  *    not the same as earning trust, and the gate has to hold the distinction.
  *
+ * D. **`recognitionScore` drifts under the same input, and drifted toward
+ *    unsafe.** Re-running the identical byte-for-byte messy invoice on Sep 3
+ *    (docs/nutrient-calibration-sep3.md) reproduced the same two wrong values
+ *    from finding B — but `recognitionScore` came back 0.834 and 0.842, not
+ *    0.678 and 0.569. At the 0.8 floor set from the Aug 20 sample, that is the
+ *    difference between both wrong fields being caught and both auto-approving.
+ *    They did auto-approve, live, against this module's own code, until the
+ *    floor below was raised in response. Two same-day re-runs reproduced the
+ *    Sep 3 numbers exactly, so the drift is not per-request noise — it moved
+ *    between Aug 20 and Sep 3 and then held stable. A threshold calibrated
+ *    against one engine snapshot is not guaranteed to stay safe against a
+ *    later one, with no signal that anything changed: match label, confidence,
+ *    and groundingScore were unchanged across both snapshots. Recalibrate
+ *    before relying on this gate for a live demo or judging run, not just once
+ *    at feature-freeze.
+ *
  * This module is pure: no network, no clock, no filesystem. That is what makes
  * it testable against committed fixtures.
  */
@@ -116,8 +133,20 @@ export const TIEBREAK_MATCHES = Object.freeze(["id_match", "id_match_multiblock"
  *
  * The `recognition` floor is the one that earns its keep. See finding B in the
  * header: it is the only signal that caught two confidently-wrong OCR reads
- * that every other signal cleared. It is set above the observed 0.678 of the
- * worst wrong field on purpose.
+ * that every other signal cleared. It is NOT simply set above the worst wrong
+ * field observed once — see finding D. Across three live samples of the same
+ * document (Aug 20, Aug 29, Sep 3 — docs/nutrient-calibration-sep3.md), the
+ * same two wrong fields scored recognitionScore 0.678/0.569, 0.678/0.569, then
+ * 0.834/0.842. The old floor of 0.8 caught the first two snapshots and missed
+ * the third, live, against this code: both wrong dollar amounts auto-approved.
+ * `invoice.recognition` is now 0.90 — 0.058 above the worst wrong score seen
+ * (0.842). That margin is deliberately not claimed as safe: the drift already
+ * observed between snapshots was +0.164, nearly three times this margin, over
+ * two weeks with no other signal changing to warn of it. A repeat of that
+ * drift clears 0.90 too. This is the best defensible number from three
+ * samples of one synthetic document, not a statistically tight bound —
+ * recalibrate before a live demo or judging run rather than trusting this
+ * number indefinitely.
  *
  * `requireRecognition` decides what an *absent* `recognitionScore` means. The
  * API omits it for born-digital text, `not_found`, and VLM-only (agentic)
@@ -146,17 +175,24 @@ export const TIEBREAK_MATCHES = Object.freeze(["id_match", "id_match_multiblock"
  * @type {Record<string, {confidence: number, grounding: number, recognition: number, requireRecognition: boolean, calibrated: boolean}>}
  */
 export const THRESHOLDS = {
+  // No live data backs DEFAULT at all, so it stays at least as strict as the
+  // one type (invoice) that does have live evidence.
   DEFAULT: {
     confidence: 0.9,
     grounding: 0.7,
-    recognition: 0.8,
+    recognition: 0.92,
     requireRecognition: true,
     calibrated: false,
   },
+  // recognition: 0.90 — see the header comment above THRESHOLDS (finding D):
+  // set 0.058 above the worst live wrong-value recognitionScore observed
+  // (0.842, Sep 3), which is itself already 0.164 above the same wrong field's
+  // score three weeks earlier (0.678, Aug 20/29). The margin is real but not
+  // proven to survive a repeat drift of that size.
   invoice: {
     confidence: 0.85,
     grounding: 0.7,
-    recognition: 0.8,
+    recognition: 0.9,
     requireRecognition: true,
     calibrated: false,
   },
