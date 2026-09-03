@@ -409,27 +409,49 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 
     <p>The staged document looks redacted and is not. The gap between a check that passes and a document that is still dangerous is precisely what the approval gate guards — and it is why applying redactions is treated as irreversible rather than as cleanup.</p>
 
-    <p class="dim" style="font-size:0.85rem;">Verified live on 2026-08-20; the byte-level walk is recorded in <code>docs/nutrient-stage-aug20.md</code>. The artifact itself is not yet committed as a fixture — see Known gaps.</p>
+    <p class="dim" style="font-size:0.85rem;">Verified live on 2026-08-20; the byte-level walk is recorded in <code>docs/nutrient-stage-aug20.md</code>. The staged artifact is committed at <code>docs/fixtures/probe-staged.pdf</code> — deliberately unredacted, because it is the evidence, not an accident.</p>
   </div>
 </section>
 
 <section>
   <div class="wrap">
-    <h2><span class="num">5</span>The gate<span class="pill shipped">shipped</span></h2>
+    <h2><span class="num">5</span>A preset that returns 200 and redacts nothing<span class="pill shipped">shipped</span></h2>
+    <p>Same API, the opposite failure. Extraction lies about a number with high confidence; redaction lies about having removed one at all. <code>preset: "vin"</code> is in the adapter's <code>CONFIRMED_PRESETS</code> list because probing it against a live document returned HTTP 200 — a valid PDF came back. Testing it in isolation against a document containing the well-formed VIN <code>1FUJGLDR8CLBP8834</code> tells a different story:</p>
+
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Target</th><th>HTTP</th><th>Output</th><th>VIN after apply</th></tr></thead>
+        <tbody>
+          <tr><td><code>preset: "vin"</code></td><td class="pass">200</td><td>valid PDF, 67,142 bytes</td><td class="fail">still present</td></tr>
+          <tr><td><code>regex: "[A-HJ-NPR-Z0-9]{17}"</code></td><td class="pass">200</td><td>valid PDF, 69,467 bytes</td><td class="right">removed</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Both calls succeed. Both return a document that opens. One did nothing to the VIN, and the only difference visible to a caller is a byte count — not something anyone thresholds on. A preset name recorded which identifiers the API <em>accepts</em>; that's a different question from which ones it <em>matches</em>, and the name had been carrying more weight than the probe behind it.</p>
+
+    <p>So the pipeline stopped trusting the apply call for any target. It re-reads the redacted document through <code>/extraction/parse</code> and confirms each value is gone before anything reaches the gate — the same verification step this page's previous finding rests on. `mcp/nutrient/pipeline-redaction.mjs` fails the run if a target can't be confirmed absent; the VIN preset itself now ships flagged non-functional and surfaced on the approval card, rather than quietly doing nothing.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="num">6</span>The gate<span class="pill shipped">shipped</span></h2>
 
     <h3>What a human actually sees</h3>
-    <p>Rendered by a custom <code>renderPlan</code> hook — the folder, the recipients, the agent's stated reason, and an explicit irrevocability warning. Not <code>JSON.stringify</code> on the raw payload.</p>
+    <p>Rendered by a custom <code>renderPlan</code> hook — the prompt, the recipients, how the extraction routed each field, what was redacted and the proof it's gone, the document hash, and an explicit irrevocability warning. Not <code>JSON.stringify</code> on the raw payload.</p>
 
     <div class="approval">
-      <div class="t">✍️ Sign: ACME Freight Invoice</div>
-      <div class="row"><span class="l">Folder</span><span class="v">ACME Freight Invoice</span></div>
-      <div class="row"><span class="l">Folder ID</span><span class="v">fld_abc123</span></div>
+      <div class="t">✍️ Sign: Freight Invoice</div>
+      <div class="row"><span class="l">Prompt</span><span class="v">Take this freight invoice, redact the PII, and send it to Alice and Bob for signature.</span></div>
       <div class="row"><span class="l">Recipients</span><span class="v">1. Alice Smith &lt;alice@example.com&gt;
 2. Bob Jones &lt;bob@example.com&gt;</span></div>
-      <div class="row"><span class="l">Agent's reason</span><span class="v">Invoice approved for countersignature</span></div>
-      <div class="row irr"><span class="l">⚠️ Irreversible</span><span class="v">Approving sends this document to the listed recipients for signature. This action cannot be undone. Emails will be sent immediately.</span></div>
+      <div class="row"><span class="l">Document SHA-256</span><span class="v">f3589f35e3de7c36… (via enriched-source)</span></div>
+      <div class="row"><span class="l">Nutrient extraction</span><span class="v">0/16 fields auto-approved — 16 need human review — 13 caught by OCR recognition floor — 2 ungrounded (not_found) — thresholds calibrated: false</span></div>
+      <div class="row"><span class="l">Nutrient redaction</span><span class="v">3 target set(s) applied — 5 value(s) verified absent from the outgoing document, 1 signature field(s) verified intact</span></div>
+      <div class="row irr"><span class="l">⚠️ Irreversible</span><span class="v">Approving sends this document to the listed recipients for signature. This action cannot be undone.</span></div>
     </div>
-    <p class="dim" style="font-size:0.85rem;">Redrawn from the hook's output shape in <code>mcp/foxit/esign-mcp-server.mjs</code> with placeholder identifiers — the labels and the warning text are verbatim. Not a screenshot; the approval server binds an ephemeral port, so a real capture belongs in the demo video.</p>
+    <p class="dim" style="font-size:0.85rem;">Verbatim field labels and values from a real run against <code>--doc messy</code>, reformatted for layout — the full card is in the README. The regex redaction target is deliberately described by shape, not printed: a pattern embeds the values it hides, so putting it on the review screen would leak them.</p>
 
     <h3>The crash-safe lifecycle</h3>
     <p>The industry pattern is <code>consume()</code> — mark the plan used, then make the API call. Both orderings lose on a crash: mark-then-call leaves an audit log claiming a send that never happened; call-then-mark re-sends the document on retry. The dangerous window straddles the call, and most designs don't model it.</p>
@@ -462,34 +484,38 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 
     <p>The journal is append-only, fsync'd per record, mode <code>0o600</code>, with a parent-directory fsync so a fresh journal survives power loss. Replaying it reconstructs exactly the state the system was in when it died. <code>dataDigest</code> is re-checked on <code>beginExecute</code> and fails closed, so an approval cannot be replayed against changed content.</p>
 
-    <p class="dim" style="font-size:0.85rem;">The reconciliation callback and the three-way branch are implemented in <code>mcp/foxit/esign-adapter.mjs</code> and unit-tested against the Gate&nbsp;0 fixtures. A recorded end-to-end crash-and-recover run is the demo video's job — see Known gaps for what is not yet exercised live.</p>
+    <h3>Verbatim from the recorded demo</h3>
+    <p>Real folder IDs, against the live eSign API. <code>NO_UNDO_CRASH_AFTER_FSYNC=1</code> forces the same <code>SIGKILL</code> the journal is designed to survive, at the exact point after the fsync and before the gateway is called:</p>
 
-    <!--
-      PENDING (P4): a captured terminal transcript of the crash and recovery.
-      Do not restore until:
-        P4 - one real send produces the first observed folderStatus: SHARED
-      P1 (agent loop) is done — agent/esign-agent-loop.mjs drives approve → execute → crash → reconcile.
-      The hash-chained JSONL audit trail itself has shipped (P2 done): both stages
-      append to <journalDir>/{esign,redaction}-audit.jsonl via
-      mcp/lib/jsonl-audit-sink.mjs, and P3 deterministic crash injection
-      (NO_UNDO_CRASH_AFTER_FSYNC) landed with it. What is still missing is the
-      recorded end-to-end run. When restoring, capture real output with
-      asciinema/script. Use the real journal
-      statuses - previewed | awaiting_approval | approved | rejected | executing |
-      executed | failed - with fields planToken/status. There is no plan_created,
-      no reconciled_draft, and no actor field. The DRAFT branch journals
-      failed / EXECUTION_FAILED. And never screen-record a raw journal: the record
-      carries the full payload.
-    -->
+    <div class="repro">
+<pre style="white-space:pre-wrap; margin:0;">$ NO_UNDO_CRASH_AFTER_FSYNC=1 node agent/esign-agent-loop.mjs --auto-approve --doc messy \
+    --prompt "Take this freight invoice, redact the PII, and send it to Alice and Bob for signature."
+[agent] Draft: folderId=35704250 planToken=7c61234a… documentSha256=491d5ef8070b98b3…
+[esign-audit] executing token=7c61234a... tool=esign_send
+[crash-injection] SIGKILL after beginExecute fsync (token=7c61234a...) before the gateway send
+
+# same command, no crash flag
+$ node agent/esign-agent-loop.mjs --auto-approve --doc messy --prompt "Take this freight invoice…"
+[agent] Recovered 1 stuck-executing plan(s) (reconciled on load):
+  - planToken=7c61234a... folderId=35704250 → folderStatus=DRAFT → confirmed not executed → released for retry
+[agent] Plan is executing — calling gateway sendDraftFolder…
+[agent] Send succeeded — plan executed (verified SHARED)
+[agent] Result: { "status": "executed", "verifiedStatus": "SHARED", "folderId": 35704276 }</pre>
+    </div>
+
+    <p>The crash landed on the <code>DRAFT</code> side of the window: the gateway had never been called, so the plan was released and retried. Had it landed on the other side, the same query returns <code>SHARED</code> and recovery records the send instead of repeating it — the branch is chosen by the system of record, not by a guess, and either way the document goes out exactly once.</p>
+
+    <p class="dim" style="font-size:0.85rem;">The reconciliation callback and the three-way branch are implemented in <code>mcp/foxit/esign-adapter.mjs</code> and unit-tested against the Gate&nbsp;0 fixtures, in addition to this live run. What the audit sink does <em>not</em> yet record: the post-send poll-and-download step that retrieves the signed document logs to the console but never writes to the hash-chained journal — the send itself is fully audited, that later step isn't.</p>
   </div>
 </section>
 
 <section>
   <div class="wrap">
-    <h2><span class="num">6</span>We audited our own gate and it failed<span class="pill shipped">shipped</span></h2>
+    <h2><span class="num">7</span>We audited our own gate and it failed<span class="pill shipped">shipped</span></h2>
     <p>The approval card above was written carefully to show only the folder name and recipients — no payload dump, because this is a PII demo. Then we checked the endpoint behind it.</p>
     <p><code>GET /api/plans</code> returned the <strong>raw payload anyway</strong> — a social security number and the full recipient list, straight past the redaction the card was performing. A host's careful <code>renderPlan</code> hook was being silently bypassed by the API serving it.</p>
     <p>Filed upstream as <code>safe-write-mcp-core</code> issue #18, fixed in PR #19, published as <strong>v0.3.0</strong> — the raw <code>payload</code> field is now dropped by default and available only via an explicit <code>exposeRawPayload</code> opt-in. This project consumes the fix by version bump. Two other servers built on the same core inherit it.</p>
+    <p>The second gap in the same server was authentication, not redaction: the approval server bound loopback and checked <code>Host</code>/<code>Origin</code>/<code>Sec-Fetch-Site</code>, which stops a malicious web page but not a hostile local process. Filed as issue #20, fixed upstream in <strong>v0.4.0</strong> — every route now requires a per-session bearer token, carried in the approval URL's <code>?token=</code>. This project runs on 0.4.0 today; both prior gaps are closed at the core, not patched around downstream.</p>
     <p class="dim" style="font-size:0.85rem;">Found by live reproduction, not by reading the code — a <code>renderPlan</code> hook surfacing only the folder name still returned the SSN over the API.</p>
   </div>
 </section>
@@ -527,7 +553,7 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
 
     <div class="note warn">
       <span class="h">What "shipped" means here</span>
-      <p>All four boxes above are now running code. The eSign path assembles its document via <code>pdf_from_html</code> → <code>get_task_result</code> (Aug 29–30 B) and falls back to a fixture only when <code>NO_FOXIT_MCP</code> is set. The cold-open prompt — <code>Take this freight invoice, redact the PII, and send it to Alice and Bob for signature.</code> — is parsed by <code>mcp/foxit/prompt-parser.mjs</code> into a typed payload and echoed back in the approval card for correction before the gate (Aug 29–30 A). When <code>NUTRIENT_API_KEY</code> + <code>NUTRIENT_DWS_EXTRACTION_API_KEY</code> are present, the same <code>PlanStore</code> and approval queue enrich the pipeline with a best-effort Nutrient stage before assembly; without them, the pipeline reproduces with a single Foxit credential pair (P6 single-pipeline wiring). Signed-document retrieval polls <code>EXECUTED</code> and downloads via <code>document/download</code> (Aug 29–30 C).</p>
+      <p>All four boxes above are now running code, and the send has been performed live end to end — see the recorded crash-and-recovery run above, with a real <code>folderStatus: SHARED</code>. The eSign path assembles its document via <code>pdf_from_html</code> → <code>get_task_result</code> and falls back to a fixture only when <code>NO_FOXIT_MCP</code> is set. The cold-open prompt — <code>Take this freight invoice, redact the PII, and send it to Alice and Bob for signature.</code> — is parsed by <code>mcp/foxit/prompt-parser.mjs</code> into a typed payload and echoed back in the approval card for correction before the gate. When <code>NUTRIENT_API_KEY</code> + <code>NUTRIENT_DWS_EXTRACTION_API_KEY</code> are present, the same <code>PlanStore</code> and approval queue run Nutrient extraction, redaction, and a read-back verification before assembly; without them, the pipeline reproduces with a single Foxit credential pair (<code>NO_NUTRIENT=1</code>), the Foxit track's judged path. Signed-document retrieval polls <code>EXECUTED</code> and downloads via <code>document/download</code>.</p>
     </div>
 
     <p>The gate itself is not Foxit-specific. <code>safe-write-mcp-core</code> owns only the plan lifecycle; preview rendering and reconciliation are host-supplied. Foxit and Nutrient are adapters, not dependencies — which is why the same kernel already sits behind two other servers.</p>
@@ -564,11 +590,12 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
   <div class="wrap">
     <h2>Progress</h2>
     <ul>
-      <li><strong><code>safe-write-mcp-core@0.3.0</code> is published on npm</strong> and consumed here by version — not vendored, not a fork.</li>
-      <li><strong>Three upstream issues filed against our own core</strong> (#18, #19, #20) rather than patched around downstream, so the other two servers on the same kernel inherit the fixes.</li>
-      <li><strong>The crash-safety redesign shipped</strong> — <code>consume()</code> split into <code>beginExecute()</code> / <code>confirmExecuted()</code> / <code>confirmFailed()</code>, with a durable streamed-replay journal.</li>
+      <li><strong><code>safe-write-mcp-core@0.4.0</code> is published on npm</strong> and consumed here by version — not vendored, not a fork.</li>
+      <li><strong>Three upstream issues filed against our own core, all three fixed</strong> (#18/#19 the payload leak, #20 the missing bearer token) rather than patched around downstream, so the other two servers on the same kernel inherit every fix.</li>
+      <li><strong>The crash-safety redesign shipped and has been demoed live</strong> — <code>consume()</code> split into <code>beginExecute()</code> / <code>confirmExecuted()</code> / <code>confirmFailed()</code>, with a durable streamed-replay journal, and a real crash-and-recover run against the live eSign API produced a real <code>SHARED</code> folder.</li>
       <li><strong>The audit trail is a hash-chained JSONL file.</strong> Every lifecycle event from both irreversible stages is appended with <code>prevHash</code> + sha256, fsync'd per line, and re-verified by streaming — tamper a record and verification names the line. Crash debris (a torn final write) is truncated on recovery, never chained over.</li>
-      <li><strong><span id="test-count">191</span> tests pass in CI</strong> across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
+      <li><strong>Nutrient redaction is wired into the single pipeline and verified,</strong> not staged as a preview: <code>/build</code> applies the targets, then <code>/extraction/parse</code> reads the result back and confirms each value is actually gone before the plan reaches the gate.</li>
+      <li><strong><span id="test-count">283</span> tests, 48 suites, pass in CI</strong> — no live API calls — across the eSign adapter, extraction routing, redaction, the staged cache, and the audit sink.</li>
       <li><strong>Every live finding is committed as a fixture</strong>, including the failures and the wrong-endpoint probe that preceded the right one.</li>
     </ul>
   </div>
@@ -579,12 +606,12 @@ Parcel 2   qty <span class="n">1</span>   $39.99</pre>
     <h2>Known gaps</h2>
     <p>Things we would want a reviewer to know without having to find them.</p>
     <ul>
-      <li><strong>The thresholds are not calibrated.</strong> All are marked <code>calibrated: false</code> and a test enforces that. They over-refer on purpose until there's a representative sample per document type.</li>
-      <li><strong>The approval server has no shared secret.</strong> It binds loopback and checks <code>Host</code> / <code>Origin</code> / <code>Sec-Fetch-Site</code>, which defends against a malicious web page but not against a hostile local process. Filed upstream as core issue #20 with a proposed per-session bearer token; fixing it downstream would leave the other two servers exposed.</li>
-      <li><strong>Redaction cannot be reconciled at all.</strong> The build endpoint is one synchronous request with no job ID and no server-side state, so <code>reconcile</code> returns <code>unknown</code> honestly and a plan interrupted mid-apply stays visibly stuck for a human.</li>
-      <li><strong>No eSign send has been performed end to end yet.</strong> Gate 0 proved entitlement and confirmed the send route exists; <code>folderStatus: SHARED</code> has not yet been observed live.</li>
-      <li><strong>The redaction byte-check has no committed artifact.</strong> It was verified live and written up, but those unit tests mock the transport.</li>
-      <li><strong>Nutrient live extraction is not yet wired into the pipeline.</strong> The single-pipeline shape (prompt → enrichment → assembly → gate) is shipped; the enrichment step currently stages the document and proves the adapter is importable, with live <code>routeFields</code> routing as the next increment once a calibration sample is committed.</li>
+      <li><strong>The thresholds are not calibrated.</strong> All are marked <code>calibrated: false</code> and a test enforces that. They over-refer on purpose until there's a representative sample per document type — the recognition floor was raised once already, on Sep 3, after a live re-run auto-approved two wrong dollar amounts the previous floor had caught two weeks earlier.</li>
+      <li><strong>Redaction targets are a fixed list, not a detector.</strong> The default set covers email, North American phone, and a VIN regex, because those are what the demo invoice carries and what was actually probed to match. A passport number or an IBAN would pass through untouched, and verification would report success — it confirms the values it was <em>told</em> to remove are gone, not that the document is free of PII.</li>
+      <li><strong>One approval is enough.</strong> There's no N-of-M quorum — a single click authorizes the send. Building it needs upstream changes to <code>safe-write-mcp-core</code> (approvals as a recorded set, per-approver identity instead of a shared token), not a local patch; a shallow local version would look like multi-party approval while being satisfiable by one person clicking Approve twice, which is worse than leaving it cut.</li>
+      <li><strong>Redaction cannot be reconciled after a crash.</strong> The eSign side asks the gateway a real question — DRAFT or SHARED — and gets a real answer. The <code>/build</code> endpoint has no job ID and no server-side state to ask about, so <code>reconcile</code> returns <code>unknown</code> honestly, and a plan interrupted mid-apply stays visibly stuck for a human.</li>
+      <li><strong>The outgoing document carries a trial watermark.</strong> The Nutrient free trial stamps "For Evaluation Purposes Only" across every document <code>/build</code> returns — a licensing artifact, not a pipeline behavior, but it's on the redacted PDF that reaches the gate and the recipient.</li>
+      <li><strong>Verification reads the document once.</strong> It confirms the target values are absent from <code>/extraction/parse</code> output. A value rendered as an image, or split across text runs the parser rejoins differently, could evade both the redactor and the check.</li>
     </ul>
   </div>
 </section>

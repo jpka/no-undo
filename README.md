@@ -173,7 +173,7 @@ Omit `--recipient` and the run refuses to send: the parser's fallback addresses 
 
 ```bash
 npm test
-# 255 tests, 45 suites — all green, no live API calls
+# 283 tests, 48 suites — all green, no live API calls
 ```
 
 Every extraction claim in this repo is backed by a committed API response. The fixtures and the test suite need no credentials; the probes make live billed calls and do.
@@ -288,7 +288,7 @@ mcp/foxit/call-tool.mjs        — MCP stdio transport
 mcp/nutrient/pipeline-redaction.mjs — stage → apply → verify, fail-closed
 mcp/nutrient/                  — extraction routing, staged redaction
 mcp/lib/jsonl-audit-sink.mjs   — hash-chained, fsync'd audit trail
-test/                          — 255 tests, all green, no live API
+test/                          — 283 tests, all green, no live API
 docs/showcase.html             — judge-facing walkthrough
 docs/demo-video-script.md      — shooting spec for the demo video
 docs/nutrient-redaction-sep1.md — six probe findings behind the redaction design
@@ -308,6 +308,8 @@ docs/fixtures/                 — committed API responses + redaction artifacts
   signature fields and the verification read-back are unaffected — but it is on
   the deliverable, and `docs/fixtures/probe-applied.pdf` shows exactly how.
 - **Verification reads the document once.** It confirms the target values are absent from `/extraction/parse` output. A value rendered as an image, or split across text runs in a way the parser rejoins differently, could evade both the redactor and the check.
+- **One approval is enough.** The gate proves *a* human looked at the plan, not the *right* human, or enough of them. Getting real N-of-M approval needs upstream changes to `safe-write-mcp-core` — `TokenEntry.approved` becoming a recorded set instead of a boolean, idempotency keyed on approver identity instead of "this plan has one approval," and per-approver auth instead of a shared bearer token — because a shallow local version would let one person satisfy a 2-of-3 requirement by clicking Approve twice, which is worse than not having it. Traced in `build-plan.md`; still cut.
+- **Redaction can't be reconciled after a crash.** The eSign side asks the gateway "did this send happen?" and gets a real answer. The Nutrient `/build` call has no job ID and no server-side state to ask about, so a process that dies mid-apply leaves `reconcile` returning `unknown` — honestly, but a human still has to look.
 
 ---
 
@@ -317,7 +319,7 @@ docs/fixtures/                 — committed API responses + redaction artifacts
 |-------|-------|
 | **Foxit** — *Your Agent Shouldn't Sign That* | Plain prompt → Foxit PDF assembly (MCP) → approval gate → eSign (direct API) → signed PDF. Signing outside MCP because the catalog is reversible by design. |
 | **Nutrient DWS** — *Turn messy documents into something trustworthy* | Detects and redacts third-party PII, verifies the removal against the document itself, routes the result for human approval, and ends in a signed, tamper-evident PDF with a hash-chained audit trail. DWS does the extraction-with-confidence routing (`/extraction/extract`), the redaction (`/build`), and the verification read-back (`/extraction/parse`). |
-| **Overall** | Progress: two shipped servers, a published npm core, 255 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
+| **Overall** | Progress: two shipped servers, a published npm core, 283 tests. Concept: agents are being handed write access to systems where actions cannot be undone, and the industry's answer is "add a confirmation prompt." Feasibility: this is already two shipped servers and a published npm core. |
 
 ---
 
