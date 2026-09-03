@@ -23,7 +23,7 @@
 
 import { dirname, resolve, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { startApprovalServer } from "safe-write-mcp-core";
+import { startStyledApprovalServer } from "../mcp/lib/approval-ui.mjs";
 import {
   loadEsignStore,
   createEsignFolder,
@@ -577,7 +577,7 @@ export async function runAgentLoop({
   }
 
   // Start the approval server sharing this store.
-  const approvalHandle = await startApprovalServer(store, {
+  const approvalHandle = await startStyledApprovalServer(store, {
     renderPlan: renderEsignPlan,
     title: "eSign Approval Queue",
   });
