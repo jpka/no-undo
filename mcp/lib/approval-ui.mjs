@@ -76,6 +76,11 @@ const CSS = `
   pre {
     background: none; padding: 0; margin: 0; border-radius: 0;
     font-family: var(--mono); font-size: .9rem; line-height: 1.5; color: var(--fg);
+    /* The core wraps its <pre> blocks; this stylesheet replaces the core's
+       entirely, so it has to carry the wrapping too. Without it a long
+       extraction summary or an unbroken SHA-256 pushes the page several
+       thousand pixels wide and the card's own border ends up mid-text. */
+    white-space: pre-wrap; word-break: break-word;
   }
   dd em { color: var(--muted); font-style: normal; }
 
