@@ -36,12 +36,17 @@ describe("styled approval page", () => {
     origin = `http://127.0.0.1:${handle.port}`;
   });
 
+  /** Authorization header carrying the server's bearer token (core 0.4.0, safe-write-mcp-core#20). */
+  function authHeaders(extra = {}) {
+    return { Authorization: `Bearer ${handle.token}`, ...extra };
+  }
+
   after(async () => {
     await handle?.close();
   });
 
   test("serves the page with our stylesheet, not the core's", async () => {
-    const res = await fetch(origin);
+    const res = await fetch(origin, { headers: authHeaders() });
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const html = await res.text();
@@ -51,13 +56,13 @@ describe("styled approval page", () => {
   });
 
   test("Content-Length matches the rewritten body", async () => {
-    const res = await fetch(origin);
+    const res = await fetch(origin, { headers: authHeaders() });
     const html = await res.text();
     assert.equal(Number(res.headers.get("content-length")), Buffer.byteLength(html));
   });
 
   test("leaves the approve/reject client script intact", async () => {
-    const html = await fetch(origin).then((r) => r.text());
+    const html = await fetch(origin, { headers: authHeaders() }).then((r) => r.text());
     assert.match(html, /data-action/, "action buttons gone");
     assert.match(html, /\/api\/plans\//, "client fetch path gone");
   });
@@ -67,14 +72,14 @@ describe("styled approval page", () => {
   // unbroken line of field paths — renders at its full width and pushes the
   // page past 2900px, with the card's right border cutting through the text.
   test("keeps long plan values wrapped inside the card", async () => {
-    const html = await fetch(origin).then((r) => r.text());
+    const html = await fetch(origin, { headers: authHeaders() }).then((r) => r.text());
     const preRule = html.match(/\n\s*pre \{[^}]*\}/s)?.[0] ?? "";
     assert.match(preRule, /white-space:\s*pre-wrap/, "<pre> would not wrap");
     assert.match(preRule, /word-break:\s*break-word/, "an unbroken SHA-256 would not wrap");
   });
 
   test("does not touch JSON routes", async () => {
-    const res = await fetch(`${origin}/api/plans`);
+    const res = await fetch(`${origin}/api/plans`, { headers: authHeaders() });
     assert.match(res.headers.get("content-type") ?? "", /application\/json/);
     const body = await res.json();
     assert.ok(Array.isArray(body.plans ?? body), "plan list not returned as JSON");
@@ -87,6 +92,9 @@ describe("styled approval page", () => {
   // Uses node:http, not fetch — `Host` is a forbidden header name in fetch, so
   // undici drops the override and sends the real one. The request then
   // succeeds and the test passes while proving nothing at all.
+  // No Authorization header on purpose: provenance is checked before the
+  // bearer token (safe-write-mcp-core#20), so a bad Host must still 403
+  // ahead of a 401 an unauthenticated request would otherwise get.
   test("still rejects a request whose Host is not this loopback port", async () => {
     const status = await new Promise((resolve, reject) => {
       const req = http.request(
@@ -106,11 +114,28 @@ describe("styled approval page", () => {
   test("approves through the delegated endpoint", async () => {
     const res = await fetch(`${origin}/api/plans/${planToken}/approve`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ approvedBy: "tester" }),
     });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).ok, true);
+  });
+
+  // The gap safe-write-mcp-core#20 closes: without a bearer token, a plain
+  // HTTP client that never sends Origin/Sec-Fetch-Site (like this one) used
+  // to sail through on Host alone. Delegating through our own socket must
+  // not accidentally drop that check.
+  test("rejects a request with no bearer token", async () => {
+    const res = await fetch(`${origin}/api/plans`);
+    assert.equal(res.status, 401);
+  });
+
+  // The printed approval URL (agent/esign-agent-loop.mjs et al.) carries the
+  // token as `?token=`, not a header, because a plain browser navigation to
+  // `GET /` can't set one — this is the path a human actually uses.
+  test("accepts the bearer token via the ?token= query string", async () => {
+    const res = await fetch(`${origin}/?token=${handle.token}`);
+    assert.equal(res.status, 200);
   });
 });
 

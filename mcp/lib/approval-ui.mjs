@@ -28,6 +28,7 @@
  */
 
 import http from "node:http";
+import { randomBytes } from "node:crypto";
 import { createApprovalServer } from "safe-write-mcp-core";
 
 const LOOPBACK = "127.0.0.1";
@@ -189,14 +190,31 @@ function interceptHtml(res, css) {
 
 /**
  * Drop-in replacement for `startApprovalServer` that serves the same page with
- * this project's styling. Same signature, same handle shape.
+ * this project's styling. Same signature, same handle shape — including the
+ * bearer `token` (safe-write-mcp-core#20 / core 0.4.0), which `createApprovalServer`
+ * itself never surfaces: it resolves and checks a token internally but only
+ * `startApprovalServer` hands one back. We call `createApprovalServer` directly
+ * (see the file header) so we have to redo that resolve-and-return step
+ * ourselves — same rule as `resolveAuthToken` in core's `approvalServer.ts`,
+ * duplicated because it isn't exported: `requireAuth: false` disables auth
+ * entirely (token stays `null`), an explicit `options.authToken` wins, and
+ * otherwise a random 32-byte token is generated. The resolved value is then
+ * passed back into `createApprovalServer` as a concrete `authToken` so it
+ * doesn't generate a second, different token nobody has.
  *
  * @param {any} store
  * @param {any} [options] - passed through to createApprovalServer untouched
- * @returns {Promise<{server: import("node:http").Server, port: number, host: string, close(): Promise<void>}>}
+ * @returns {Promise<{server: import("node:http").Server, port: number, host: string, token: string|null, close(): Promise<void>}>}
  */
 export async function startStyledApprovalServer(store, options = {}) {
-  const core = createApprovalServer(store, options);
+  const token = options.requireAuth === false
+    ? null
+    : options.authToken || randomBytes(32).toString("hex");
+  const core = createApprovalServer(store, {
+    ...options,
+    authToken: token ?? undefined,
+    requireAuth: token !== null,
+  });
   const server = http.createServer((req, res) => {
     // Delegating on our own socket is the whole point: localPort and the Host
     // header still agree, so the core's provenance checks are unchanged.
@@ -217,6 +235,7 @@ export async function startStyledApprovalServer(store, options = {}) {
     server,
     port,
     host: LOOPBACK,
+    token,
     close: () =>
       new Promise((resolve) => {
         server.close(() => resolve(undefined));

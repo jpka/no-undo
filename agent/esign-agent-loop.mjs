@@ -582,7 +582,8 @@ export async function runAgentLoop({
     title: "eSign Approval Queue",
   });
   console.error(
-    `[agent] Approval server: http://${approvalHandle.host}:${approvalHandle.port}`,
+    `[agent] Approval server: http://${approvalHandle.host}:${approvalHandle.port}/` +
+      (approvalHandle.token ? `?token=${approvalHandle.token}` : ""),
   );
 
   let result;
