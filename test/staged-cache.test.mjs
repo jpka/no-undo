@@ -23,7 +23,7 @@ import {
   CANONICAL_ROOT,
   assertDistinct,
 } from "../mcp/nutrient/nutrient-mcp-server.mjs";
-import { CONFIRMED_PRESETS } from "../mcp/nutrient/redaction-adapter.mjs";
+import { CONFIRMED_PRESETS, NONFUNCTIONAL_PRESETS } from "../mcp/nutrient/redaction-adapter.mjs";
 
 const { map, max, ttlMs, prune } = __stagedCacheForTest;
 
@@ -328,5 +328,24 @@ describe("CONFIRMED_PRESETS", () => {
 
   test("is frozen so a caller cannot append an unverified id", () => {
     assert.throws(() => CONFIRMED_PRESETS.push("made-up"), TypeError);
+  });
+});
+
+describe("NONFUNCTIONAL_PRESETS", () => {
+  // Finding 4 (docs/nutrient-redaction-sep1.md, probed Sep 1, 2026): `vin`
+  // returns 200 from /build and redacts nothing. "Accepted" and "effective"
+  // are different claims, and this list is what keeps the two separate.
+  test("every entry is also in CONFIRMED_PRESETS — the API does accept it", () => {
+    for (const p of NONFUNCTIONAL_PRESETS) {
+      assert.ok(CONFIRMED_PRESETS.includes(p), `${p} is not even an accepted preset`);
+    }
+  });
+
+  test("vin is listed", () => {
+    assert.ok(NONFUNCTIONAL_PRESETS.includes("vin"));
+  });
+
+  test("is frozen so a caller cannot silently mark a working preset non-functional", () => {
+    assert.throws(() => NONFUNCTIONAL_PRESETS.push("made-up"), TypeError);
   });
 });
