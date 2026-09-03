@@ -26,6 +26,12 @@ const baseEnv = {
   FOXIT_CLIENT_ID: "test-client-id",
   FOXIT_CLIENT_SECRET: "test-client-secret",
   NO_FOXIT_MCP: "1",
+  // Spreading process.env would otherwise leak an ambient
+  // NUTRIENT_DWS_EXTRACTION_API_KEY (a real key present in some
+  // environments) into the spawned CLI, sending it down the live
+  // extraction/redaction pipeline instead of the fixture-PDF path this
+  // test exercises.
+  NO_NUTRIENT: "1",
 };
 
 // Spawn the CLI and resolve once it reaches the approval server (logged to

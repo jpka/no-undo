@@ -47,6 +47,11 @@ beforeEach(() => {
   process.env.FOXIT_CLIENT_ID = "test-client-id";
   process.env.FOXIT_CLIENT_SECRET = "test-client-secret";
   process.env.NO_FOXIT_MCP = "1";
+  // Ambient NUTRIENT_DWS_EXTRACTION_API_KEY (a real key present in some
+  // environments) would otherwise route this suite through the live
+  // extraction/redaction pipeline, which the mocked fetch above has no
+  // fixtures for.
+  process.env.NO_NUTRIENT = "1";
   defaultFixtures();
   originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
@@ -73,6 +78,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   delete process.env.NO_FOXIT_MCP;
+  delete process.env.NO_NUTRIENT;
 });
 
 // --- Temp journal helper ----------------------------------------------------
