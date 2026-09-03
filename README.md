@@ -37,10 +37,14 @@ $ node agent/esign-agent-loop.mjs --auto-approve --doc messy --prompt "Take this
 ```
 
 The crash landed on the DRAFT side of the window: the gateway had never been
-called, so the plan was released and retried. Had it landed on the other side,
-the same query returns SHARED and recovery records the send instead of
-repeating it. The branch is chosen by the system of record, not by a guess —
-and either way the document goes out exactly once.
+called, so folder `35704250` was released rather than left stuck. This CLI has
+no flag to resume a specific plan, so the second command above is a fresh
+invocation, not a retry of the first — it drafts and sends a different folder
+(`35704276`) instead; the released draft just sits there for a human to act on
+later, never auto-resent. Had the crash landed on the other side of the
+window, the same query returns SHARED and recovery records the send instead
+of repeating it. The branch is chosen by the system of record, not by a
+guess — and no plan is ever sent twice.
 
 ---
 
