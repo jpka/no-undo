@@ -62,6 +62,17 @@ describe("styled approval page", () => {
     assert.match(html, /\/api\/plans\//, "client fetch path gone");
   });
 
+  // The core's own stylesheet wraps <pre>; ours replaces it wholesale, so it
+  // has to carry the wrapping too. Without it the extraction summary — one
+  // unbroken line of field paths — renders at its full width and pushes the
+  // page past 2900px, with the card's right border cutting through the text.
+  test("keeps long plan values wrapped inside the card", async () => {
+    const html = await fetch(origin).then((r) => r.text());
+    const preRule = html.match(/\n\s*pre \{[^}]*\}/s)?.[0] ?? "";
+    assert.match(preRule, /white-space:\s*pre-wrap/, "<pre> would not wrap");
+    assert.match(preRule, /word-break:\s*break-word/, "an unbroken SHA-256 would not wrap");
+  });
+
   test("does not touch JSON routes", async () => {
     const res = await fetch(`${origin}/api/plans`);
     assert.match(res.headers.get("content-type") ?? "", /application\/json/);
