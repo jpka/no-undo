@@ -104,6 +104,17 @@ The pipeline therefore does not trust the apply call. It re-reads the redacted
 document and confirms each target value is gone before the document can reach
 the gate. A redaction that silently no-ops fails the run instead of shipping.
 
+That re-read verification only covers `pipeline-redaction.mjs`. The standalone
+`nutrient_stage_redactions`/`nutrient_apply_redactions` MCP tools
+(`nutrient-mcp-server.mjs`) take any `CONFIRMED_PRESETS` value straight from
+the caller with no equivalent check, so a human approving that plan is the
+only backstop — and the approval card described `vin` no differently from a
+preset that works. Closed separately (Sep 3, 2026): `NONFUNCTIONAL_PRESETS` in
+`redaction-adapter.mjs` names `vin` explicitly, `describeTarget` puts a
+`⚠ confirmed non-functional` warning directly on the approval card when it is
+used, and the MCP tool's own schema description surfaces the same warning
+before the call is even made.
+
 **Correction to an earlier reading of this data.** The parse output of the
 original document also contains digit runs like `207453-1288` and `424313-2107`
 that look phone-shaped. These vary between runs of the same deterministic input

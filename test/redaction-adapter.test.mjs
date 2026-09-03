@@ -390,6 +390,21 @@ describe("describeTarget", () => {
     const classes = describeTarget({ strategy: "regex", regex: "\\d{3}-\\d{2}-\\d{4}" });
     assert.match(classes, /character classes only/);
   });
+
+  test("flags a preset confirmed to accept but not match (Finding 4)", () => {
+    // vin returns 200 from /build and redacts nothing — see NONFUNCTIONAL_PRESETS
+    // and docs/nutrient-redaction-sep1.md Finding 4. A human approving a plan off
+    // this description alone must not be able to mistake it for a working preset.
+    const d = describeTarget({ strategy: "preset", preset: "vin" });
+    assert.match(d, /vin/);
+    assert.match(d, /non-functional/);
+    assert.match(d, /redacts nothing/);
+  });
+
+  test("does not flag a preset confirmed to actually match", () => {
+    const d = describeTarget({ strategy: "preset", preset: "email-address" });
+    assert.ok(!d.includes("non-functional"), `unexpected warning on a working preset: ${d}`);
+  });
 });
 
 // --- Security-critical option handling --------------------------------------

@@ -41,6 +41,7 @@ import {
   loadRedactionStore,
   renderRedactionPlan,
   CONFIRMED_PRESETS,
+  NONFUNCTIONAL_PRESETS,
 } from "./redaction-adapter.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -306,8 +307,12 @@ const targetSchema = z.discriminatedUnion("strategy", [
         // Named explicitly because a wrong preset is worse than an error: one that
         // matches nothing stages zero regions and still returns a valid PDF, so the
         // document looks processed and is not redacted at all.
-        `Confirmed preset ids (live-verified): ${CONFIRMED_PRESETS.join(", ")}. ` +
-          "Short forms such as email, phone, or ssn are rejected with 400.",
+        `Confirmed preset ids, accepted by the API (live-verified): ${CONFIRMED_PRESETS.join(", ")}. ` +
+          "Short forms such as email, phone, or ssn are rejected with 400. " +
+          `WARNING — accepted is not the same as effective: ${NONFUNCTIONAL_PRESETS.join(", ")} ` +
+          "return 200 and a valid PDF but are confirmed to redact nothing " +
+          "(docs/nutrient-redaction-sep1.md Finding 4). Use an equivalent regex instead. " +
+          "The approval card names this explicitly if one of these is used anyway.",
       ),
   }),
 ]);

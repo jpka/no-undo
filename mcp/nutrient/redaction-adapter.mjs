@@ -138,14 +138,23 @@ async function postBuild(body) {
  */
 
 /**
- * Preset identifiers confirmed against the live /build endpoint (Aug 20, 2026).
+ * Preset identifiers confirmed **accepted** against the live /build endpoint
+ * (Aug 20, 2026).
  *
- * Each of these returned 200. The obvious short forms do NOT work and return 400:
- * `email`, `phone`, `ssn`, `email_addresses`, `emailAddress`, `phone-number`, and
+ * "Accepted" is the only claim this list makes: each of these returned 200.
+ * The obvious short forms do NOT work and return 400: `email`, `phone`,
+ * `ssn`, `email_addresses`, `emailAddress`, `phone-number`, and
  * `us-social-security-number` were all rejected. The naming is inconsistent
- * enough to be worth pinning rather than guessing at call time — a typo here is
- * a 400 at best and a silently-unredacted document at worst, since a preset that
- * matches nothing stages zero regions and still returns a valid PDF.
+ * enough to be worth pinning rather than guessing at call time — a typo here
+ * is a 400 at best and a silently-unredacted document at worst, since a
+ * preset that matches nothing stages zero regions and still returns a valid
+ * PDF.
+ *
+ * Accepted is not the same as effective — see `NONFUNCTIONAL_PRESETS` right
+ * below. `vin` is in both lists: the API takes it and returns 200, and it
+ * also redacts nothing (Finding 4, docs/nutrient-redaction-sep1.md, probed
+ * Sep 1, 2026). Checking membership here is not enough to trust a preset;
+ * check `NONFUNCTIONAL_PRESETS` too.
  *
  * Not exhaustive: this is what was probed, not the complete vendor list.
  */
@@ -162,6 +171,37 @@ export const CONFIRMED_PRESETS = Object.freeze([
   "ipv6",
   "vin",
 ]);
+
+/**
+ * Presets that are in `CONFIRMED_PRESETS` (the API accepts them, HTTP 200)
+ * but were live-verified to match and redact nothing (Finding 4,
+ * docs/nutrient-redaction-sep1.md, probed Sep 1, 2026).
+ *
+ * This is the sharpest version of the danger `CONFIRMED_PRESETS`' own doc
+ * comment warns about: a preset that matches nothing stages zero regions and
+ * still returns a valid PDF, so the document looks processed and is not
+ * redacted. For `vin` specifically, a well-formed 17-character VIN
+ * (`1FUJGLDR8CLBP8834`) survived an isolated `applyRedactions` call using
+ * `preset: "vin"` untouched, while the equivalent regex
+ * (`[A-HJ-NPR-Z0-9]{17}`) removed it. Nothing in the HTTP response
+ * distinguishes the two outcomes — both return 200 and a valid PDF; only the
+ * byte count differs, which is not a signal anyone thresholds on.
+ *
+ * `mcp/nutrient/pipeline-redaction.mjs` already avoids this by using the
+ * regex instead of the preset for its VIN target, and independently verifies
+ * every target is gone by re-reading the applied document — so the single
+ * pipeline cannot ship a VIN believing it redacted one. This list exists for
+ * the standalone `nutrient_stage_redactions`/`nutrient_apply_redactions` MCP
+ * tools (`nutrient-mcp-server.mjs`), which accept any `CONFIRMED_PRESETS`
+ * value directly from the caller with no equivalent re-verification — there,
+ * `describeTarget` is what has to carry the warning onto the approval card a
+ * human actually reads before approving the irreversible apply.
+ *
+ * Re-probe before removing an entry: Nutrient could fix the preset server-side
+ * without an announcement, and this list would then be stale in the safe
+ * direction (over-warning), not the dangerous one.
+ */
+export const NONFUNCTIONAL_PRESETS = Object.freeze(["vin"]);
 
 /**
  * Build the `createRedactions` actions for a target list.
@@ -209,7 +249,16 @@ function createRedactionActions(targets) {
  * @returns {string}
  */
 export function describeTarget(t) {
-  if (t.strategy === "preset") return `preset: ${t.preset}`;
+  if (t.strategy === "preset") {
+    // NONFUNCTIONAL_PRESETS: accepted by the API (200), confirmed to match
+    // and remove nothing (Finding 4). Silent here is exactly the failure
+    // mode a human approving this plan would not be able to see otherwise —
+    // the plan looks identical to one using a preset that actually works.
+    if (NONFUNCTIONAL_PRESETS.includes(t.preset)) {
+      return `preset: ${t.preset} — ⚠ confirmed non-functional: accepted by the API but redacts nothing (see docs/nutrient-redaction-sep1.md Finding 4)`;
+    }
+    return `preset: ${t.preset}`;
+  }
   if (t.strategy === "regex") {
     const pattern = typeof t.regex === "string" ? t.regex : "";
     // Literal runs are the part that could be a value rather than a matcher.
